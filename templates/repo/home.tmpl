@@ -1,7 +1,7 @@
 {{template "ng/base/head" .}}
 {{template "ng/base/header" .}}
 <div id="repo-wrapper">
-    {{template "repo/header" .}}
+    {{template "repo/header_old" .}}
     <div id="repo-content" class="clear container">
         <div id="repo-main" class="left grid-5-6">
             <p id="repo-desc">
@@ -9,11 +9,14 @@
                 <a class="link" href="{{.Repository.Website}}">{{.Repository.Website}}</a>
             </p>
             <ul id="repo-file-nav" class="clear menu menu-line">
-                <!-- <li>
-                    <a href="#">
+                {{if and .IsRepositoryAdmin .Repository.BaseRepo}}
+                {{ $baseRepo := .Repository.BaseRepo}}
+                <li>
+                    <a href="{{AppSubUrl}}/{{$baseRepo.Owner.Name}}/{{$baseRepo.Name}}/compare/{{$.BaseDefaultBranch}}...{{$.Owner.Name}}:{{$.BranchName}}">
                         <button class="btn btn-green btn-small btn-radius" id="repo-compare-btn"><i class="octicon octicon-git-compare"></i></button>
                     </a>
-                </li> -->
+                </li>
+                {{end}}
                 <li id="repo-branch-switch" class="down drop">
                     <a>
                         <button class="btn btn-gray btn-medium btn-radius">
@@ -31,39 +34,40 @@
                             </ul>
                             <ul class="menu menu-vertical switching-list {{if .IsTag}}hide{{end}}" id="repo-branch-list">
                                 {{range .Branches}}
-                                <li {{if eq . $.BranchName}}class="checked"{{end}}><a href="{{$.RepoLink}}/src/{{.}}"><i class="octicon octicon-check"></i>{{.}}</a></li>
+                                <li {{if eq . $.BranchName}}class="checked"{{end}}><a href="{{$.RepoLink}}/src/{{EscapePound .}}"><i class="octicon octicon-check"></i>{{.}}</a></li>
                                 {{end}}
                             </ul>
                             <ul class="menu menu-vertical switching-list {{if not .IsTag}}hide{{end}}" id="repo-tag-list">
                                 {{range .Tags}}
-                                <li {{if eq . $.BranchName}}class="checked"{{end}}><a href="{{$.RepoLink}}/src/{{.}}"><i class="octicon octicon-check"></i>{{.}}</a></li>
+                                <li {{if eq . $.BranchName}}class="checked"{{end}}><a href="{{$.RepoLink}}/src/{{EscapePound .}}"><i class="octicon octicon-check"></i>{{.}}</a></li>
                                 {{end}}
                             </ul>
                         </div>
                     </div>
                 </li>
                 <li id="repo-bread" class="breads">
-                    <a class="title bread" href="{{.RepoLink}}">{{.Repository.Name}}</a>
+                    <a class="title bread" href="{{.RepoLink}}/src/{{EscapePound .BranchName}}">{{.Repository.Name}}</a>
                     {{ $n := len .Treenames}}
                     {{ $l := Subtract $n 1}}
                     {{range $i, $v := .Treenames}}
                         {{if eq $i $l}}
                         <span class="bread">{{$v}}</span>
                         {{else}}
-                        <span class="bread"><a href="{{$.BranchLink}}/{{index $.Paths $i}}">{{$v}}</a></span>
+                        {{ $p := index $.Paths $i}}
+                        <span class="bread"><a href="{{EscapePound $.BranchLink}}/{{EscapePound $p}}">{{$v}}</a></span>
                         {{end}}
                     {{end}}
                 </li>
-                <li id="repo-commits-jump" class="repo-jump right">
+                <!-- <li id="repo-commits-jump" class="repo-jump right">
                     <a href="#">
                         <button class="btn btn-small btn-gray btn-right-radius"><i class="octicon octicon-git-commit"></i></button>
                     </a>
                 </li>
                 <li id="repo-find-jump" class="repo-jump right">
                     <a href="#">
-                        <button class="btn btn-small btn btn-small btn-gray btn-left-radius"><i class="octicon octicon-list-unordered"></i></button>
+                        <button class="btn btn-small btn-gray btn-left-radius"><i class="octicon octicon-list-unordered"></i></button>
                     </a>
-                </li>
+                </li> -->
             </ul>
             {{if .IsFile}}
                 {{template "repo/view_file" .}}

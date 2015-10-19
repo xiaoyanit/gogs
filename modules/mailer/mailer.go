@@ -7,84 +7,152 @@ package mailer
 import (
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/smtp"
+	"os"
 	"strings"
+	"time"
+
+	"gopkg.in/gomail.v2"
 
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
 )
 
 type Message struct {
-	To      []string
-	From    string
-	Subject string
-	Body    string
-	User    string
-	Type    string
-	Massive bool
-	Info    string
+	Info string // Message information for log purpose.
+	*gomail.Message
 }
 
-// create mail content
-func (m Message) Content() string {
-	// set mail type
-	contentType := "text/plain; charset=UTF-8"
-	if m.Type == "html" {
-		contentType = "text/html; charset=UTF-8"
+// NewMessageFrom creates new mail message object with custom From header.
+func NewMessageFrom(to []string, from, subject, body string) *Message {
+	msg := gomail.NewMessage()
+	msg.SetHeader("From", from)
+	msg.SetHeader("To", to...)
+	msg.SetHeader("Subject", subject)
+	msg.SetDateHeader("Date", time.Now())
+	msg.SetBody("text/plain", body)
+	msg.AddAlternative("text/html", body)
+
+	return &Message{
+		Message: msg,
 	}
-
-	// create mail content
-	content := "From: \"" + m.From + "\" <" + m.User +
-		">\r\nSubject: " + m.Subject + "\r\nContent-Type: " + contentType + "\r\n\r\n" + m.Body
-	return content
 }
 
-var mailQueue chan *Message
-
-func NewMailerContext() {
-	mailQueue = make(chan *Message, setting.Cfg.MustInt("mailer", "SEND_BUFFER_LEN", 10))
-	go processMailQueue()
+// NewMessage creates new mail message object with default From header.
+func NewMessage(to []string, subject, body string) *Message {
+	return NewMessageFrom(to, setting.MailService.From, subject, body)
 }
 
-func processMailQueue() {
-	for {
-		select {
-		case msg := <-mailQueue:
-			num, err := Send(msg)
-			tos := strings.Join(msg.To, "; ")
-			info := ""
-			if err != nil {
-				if len(msg.Info) > 0 {
-					info = ", info: " + msg.Info
-				}
-				log.Error(4, fmt.Sprintf("Async sent email %d succeed, not send emails: %s%s err: %s", num, tos, info, err))
-			} else {
-				log.Trace(fmt.Sprintf("Async sent email %d succeed, sent emails: %s%s", num, tos, info))
-			}
+type loginAuth struct {
+	username, password string
+}
+
+// SMTP AUTH LOGIN Auth Handler
+func LoginAuth(username, password string) smtp.Auth {
+	return &loginAuth{username, password}
+}
+
+func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	return "LOGIN", []byte{}, nil
+}
+
+func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if more {
+		switch string(fromServer) {
+		case "Username:":
+			return []byte(a.username), nil
+		case "Password:":
+			return []byte(a.password), nil
+		default:
+			return nil, fmt.Errorf("unknwon fromServer: %s", string(fromServer))
 		}
 	}
+	return nil, nil
 }
 
-// sendMail allows mail with self-signed certificates.
-func sendMail(hostAddressWithPort string, auth smtp.Auth, from string, recipients []string, msgContent []byte) error {
-	client, err := smtp.Dial(hostAddressWithPort)
+type Sender struct {
+}
+
+func (s *Sender) Send(from string, to []string, msg io.WriterTo) error {
+	opts := setting.MailService
+
+	host, port, err := net.SplitHostPort(opts.Host)
 	if err != nil {
 		return err
 	}
 
-	host, _, _ := net.SplitHostPort(hostAddressWithPort)
-	tlsConn := &tls.Config{
-		InsecureSkipVerify: true,
+	tlsconfig := &tls.Config{
+		InsecureSkipVerify: opts.SkipVerify,
 		ServerName:         host,
 	}
-	if err = client.StartTLS(tlsConn); err != nil {
+
+	if opts.UseCertificate {
+		cert, err := tls.LoadX509KeyPair(opts.CertFile, opts.KeyFile)
+		if err != nil {
+			return err
+		}
+		tlsconfig.Certificates = []tls.Certificate{cert}
+	}
+
+	conn, err := net.Dial("tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	isSecureConn := false
+	// Start TLS directly if the port ends with 465 (SMTPS protocol)
+	if strings.HasSuffix(port, "465") {
+		conn = tls.Client(conn, tlsconfig)
+		isSecureConn = true
+	}
+
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
 		return err
 	}
 
-	if ok, _ := client.Extension("AUTH"); ok && auth != nil {
-		if err = client.Auth(auth); err != nil {
+	if !setting.MailService.DisableHelo {
+		hostname := setting.MailService.HeloHostname
+		if len(hostname) == 0 {
+			hostname, err = os.Hostname()
+			if err != nil {
+				return err
+			}
+		}
+
+		if err = client.Hello(hostname); err != nil {
 			return err
+		}
+	}
+
+	// If not using SMTPS, alway use STARTTLS if available
+	hasStartTLS, _ := client.Extension("STARTTLS")
+	if !isSecureConn && hasStartTLS {
+		if err = client.StartTLS(tlsconfig); err != nil {
+			return err
+		}
+	}
+
+	canAuth, options := client.Extension("AUTH")
+	if canAuth && len(opts.User) > 0 {
+		var auth smtp.Auth
+
+		if strings.Contains(options, "CRAM-MD5") {
+			auth = smtp.CRAMMD5Auth(opts.User, opts.Passwd)
+		} else if strings.Contains(options, "PLAIN") {
+			auth = smtp.PlainAuth("", opts.User, opts.Passwd, host)
+		} else if strings.Contains(options, "LOGIN") {
+			// Patch for AUTH LOGIN
+			auth = LoginAuth(opts.User, opts.Passwd)
+		}
+
+		if auth != nil {
+			if err = client.Auth(auth); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -92,7 +160,7 @@ func sendMail(hostAddressWithPort string, auth smtp.Auth, from string, recipient
 		return err
 	}
 
-	for _, rec := range recipients {
+	for _, rec := range to {
 		if err = client.Rcpt(rec); err != nil {
 			return err
 		}
@@ -101,73 +169,44 @@ func sendMail(hostAddressWithPort string, auth smtp.Auth, from string, recipient
 	w, err := client.Data()
 	if err != nil {
 		return err
-	}
-	if _, err = w.Write([]byte(msgContent)); err != nil {
+	} else if _, err = msg.WriteTo(w); err != nil {
 		return err
-	}
-
-	if err = w.Close(); err != nil {
+	} else if err = w.Close(); err != nil {
 		return err
 	}
 
 	return client.Quit()
 }
 
-// Direct Send mail message
-func Send(msg *Message) (int, error) {
-	log.Trace("Sending mails to: %s", strings.Join(msg.To, "; "))
-	host := strings.Split(setting.MailService.Host, ":")
+func processMailQueue() {
+	sender := &Sender{}
 
-	// get message body
-	content := msg.Content()
-
-	if len(msg.To) == 0 {
-		return 0, fmt.Errorf("empty receive emails")
-	} else if len(msg.Body) == 0 {
-		return 0, fmt.Errorf("empty email body")
-	}
-
-	auth := smtp.PlainAuth("", setting.MailService.User, setting.MailService.Passwd, host[0])
-
-	if msg.Massive {
-		// send mail to multiple emails one by one
-		num := 0
-		for _, to := range msg.To {
-			body := []byte("To: " + to + "\r\n" + content)
-			err := sendMail(setting.MailService.Host, auth, msg.From, []string{to}, body)
-			if err != nil {
-				return num, err
+	for {
+		select {
+		case msg := <-mailQueue:
+			log.Trace("New e-mail sending request %s: %s", msg.GetHeader("To"), msg.Info)
+			if err := gomail.Send(sender, msg.Message); err != nil {
+				log.Error(4, "Fail to send e-mails %s: %s - %v", msg.GetHeader("To"), msg.Info, err)
+			} else {
+				log.Trace("E-mails sent %s: %s", msg.GetHeader("To"), msg.Info)
 			}
-			num++
-		}
-		return num, nil
-	} else {
-		body := []byte("To: " + strings.Join(msg.To, ";") + "\r\n" + content)
-
-		// send to multiple emails in one message
-		err := sendMail(setting.MailService.Host, auth, msg.From, msg.To, body)
-		if err != nil {
-			return 0, err
-		} else {
-			return 1, nil
 		}
 	}
 }
 
-// Async Send mail message
+var mailQueue chan *Message
+
+func NewContext() {
+	if setting.MailService == nil {
+		return
+	}
+
+	mailQueue = make(chan *Message, setting.MailService.QueueLength)
+	go processMailQueue()
+}
+
 func SendAsync(msg *Message) {
 	go func() {
 		mailQueue <- msg
 	}()
-}
-
-// Create html mail message
-func NewHtmlMessage(To []string, From, Subject, Body string) Message {
-	return Message{
-		To:      To,
-		From:    From,
-		Subject: Subject,
-		Body:    Body,
-		Type:    "html",
-	}
 }

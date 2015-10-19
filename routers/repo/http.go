@@ -7,8 +7,6 @@ package repo
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -18,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -28,27 +27,6 @@ import (
 	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
 )
-
-func basicEncode(username, password string) string {
-	auth := username + ":" + password
-	return base64.StdEncoding.EncodeToString([]byte(auth))
-}
-
-func basicDecode(encoded string) (user string, name string, err error) {
-	var s []byte
-	s, err = base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return user, name, err
-	}
-
-	a := strings.Split(string(s), ":")
-	if len(a) == 2 {
-		user, name = a[0], a[1]
-	} else {
-		err = errors.New("decode failed")
-	}
-	return user, name, err
-}
 
 func authRequired(ctx *middleware.Context) {
 	ctx.Resp.Header().Set("WWW-Authenticate", "Basic realm=\".\"")
@@ -77,7 +55,7 @@ func Http(ctx *middleware.Context) {
 
 	repoUser, err := models.GetUserByName(username)
 	if err != nil {
-		if err == models.ErrUserNotExist {
+		if models.IsErrUserNotExist(err) {
 			ctx.Handle(404, "GetUserByName", nil)
 		} else {
 			ctx.Handle(500, "GetUserByName", err)
@@ -87,7 +65,7 @@ func Http(ctx *middleware.Context) {
 
 	repo, err := models.GetRepositoryByName(repoUser.Id, reponame)
 	if err != nil {
-		if err == models.ErrRepoNotExist {
+		if models.IsErrRepoNotExist(err) {
 			ctx.Handle(404, "GetRepositoryByName", nil)
 		} else {
 			ctx.Handle(500, "GetRepositoryByName", err)
@@ -95,11 +73,14 @@ func Http(ctx *middleware.Context) {
 		return
 	}
 
-	// only public pull don't need auth
+	// Only public pull don't need auth.
 	isPublicPull := !repo.IsPrivate && isPull
-	var askAuth = !isPublicPull || setting.Service.RequireSignInView
-	var authUser *models.User
-	var authUsername, passwd string
+	var (
+		askAuth      = !isPublicPull || setting.Service.RequireSignInView
+		authUser     *models.User
+		authUsername string
+		authPasswd   string
+	)
 
 	// check access
 	if askAuth {
@@ -112,57 +93,78 @@ func Http(ctx *middleware.Context) {
 		auths := strings.Fields(baHead)
 		// currently check basic auth
 		// TODO: support digit auth
+		// FIXME: middlewares/context.go did basic auth check already,
+		// maybe could use that one.
 		if len(auths) != 2 || auths[0] != "Basic" {
-			ctx.Handle(401, "no basic auth and digit auth", nil)
+			ctx.HandleText(401, "no basic auth and digit auth")
 			return
 		}
-		authUsername, passwd, err = basicDecode(auths[1])
+		authUsername, authPasswd, err = base.BasicAuthDecode(auths[1])
 		if err != nil {
-			ctx.Handle(401, "no basic auth and digit auth", nil)
+			ctx.HandleText(401, "no basic auth and digit auth")
 			return
 		}
 
-		authUser, err = models.GetUserByName(authUsername)
+		authUser, err = models.UserSignIn(authUsername, authPasswd)
 		if err != nil {
-			ctx.Handle(401, "no basic auth and digit auth", nil)
-			return
-		}
+			if !models.IsErrUserNotExist(err) {
+				ctx.Handle(500, "UserSignIn error: %v", err)
+				return
+			}
 
-		newUser := &models.User{Passwd: passwd, Salt: authUser.Salt}
-		newUser.EncodePasswd()
-		if authUser.Passwd != newUser.Passwd {
-			ctx.Handle(401, "no basic auth and digit auth", nil)
-			return
+			// Assume username now is a token.
+			token, err := models.GetAccessTokenBySHA(authUsername)
+			if err != nil {
+				if models.IsErrAccessTokenNotExist(err) {
+					ctx.HandleText(401, "invalid token")
+				} else {
+					ctx.Handle(500, "GetAccessTokenBySha", err)
+				}
+				return
+			}
+			token.Updated = time.Now()
+			if err = models.UpdateAccessToekn(token); err != nil {
+				ctx.Handle(500, "UpdateAccessToekn", err)
+			}
+			authUser, err = models.GetUserByID(token.UID)
+			if err != nil {
+				ctx.Handle(500, "GetUserById", err)
+				return
+			}
+			authUsername = authUser.Name
 		}
 
 		if !isPublicPull {
-			var tp = models.WRITABLE
+			var tp = models.ACCESS_MODE_WRITE
 			if isPull {
-				tp = models.READABLE
+				tp = models.ACCESS_MODE_READ
 			}
 
-			has, err := models.HasAccess(authUsername, username+"/"+reponame, tp)
+			has, err := models.HasAccess(authUser, repo, tp)
 			if err != nil {
-				ctx.Handle(401, "no basic auth and digit auth", nil)
+				ctx.HandleText(401, "no basic auth and digit auth")
 				return
 			} else if !has {
-				if tp == models.READABLE {
-					has, err = models.HasAccess(authUsername, username+"/"+reponame, models.WRITABLE)
+				if tp == models.ACCESS_MODE_READ {
+					has, err = models.HasAccess(authUser, repo, models.ACCESS_MODE_WRITE)
 					if err != nil || !has {
-						ctx.Handle(401, "no basic auth and digit auth", nil)
+						ctx.HandleText(401, "no basic auth and digit auth")
 						return
 					}
 				} else {
-					ctx.Handle(401, "no basic auth and digit auth", nil)
+					ctx.HandleText(401, "no basic auth and digit auth")
 					return
 				}
+			}
+
+			if !isPull && repo.IsMirror {
+				ctx.HandleText(401, "can't push to mirror")
+				return
 			}
 		}
 	}
 
-	var f func(rpc string, input []byte)
-
-	f = func(rpc string, input []byte) {
+	callback := func(rpc string, input []byte) {
 		if rpc == "receive-pack" {
 			var lastLine int64 = 0
 
@@ -191,7 +193,11 @@ func Http(ctx *middleware.Context) {
 						newCommitId := fields[1]
 						refName := fields[2]
 
-						models.Update(refName, oldCommitId, newCommitId, authUsername, username, reponame, authUser.Id)
+						// FIXME: handle error.
+						if err = models.Update(refName, oldCommitId, newCommitId, authUsername, username, reponame, authUser.Id); err == nil {
+							models.HookQueue.AddRepoID(repo.ID)
+						}
+
 					}
 					lastLine = lastLine + size
 				} else {
@@ -201,24 +207,23 @@ func Http(ctx *middleware.Context) {
 		}
 	}
 
-	config := Config{setting.RepoRootPath, "git", true, true, f}
+	HTTPBackend(&Config{
+		RepoRootPath: setting.RepoRootPath,
+		GitBinPath:   "git",
+		UploadPack:   true,
+		ReceivePack:  true,
+		OnSucceed:    callback,
+	})(ctx.Resp, ctx.Req.Request)
 
-	handler := HttpBackend(&config)
-	handler(ctx.Resp, ctx.Req.Request)
-}
-
-type route struct {
-	cr      *regexp.Regexp
-	method  string
-	handler func(handler)
+	runtime.GC()
 }
 
 type Config struct {
-	ReposRoot   string
-	GitBinPath  string
-	UploadPack  bool
-	ReceivePack bool
-	OnSucceed   func(rpc string, input []byte)
+	RepoRootPath string
+	GitBinPath   string
+	UploadPack   bool
+	ReceivePack  bool
+	OnSucceed    func(rpc string, input []byte)
 }
 
 type handler struct {
@@ -227,6 +232,12 @@ type handler struct {
 	r    *http.Request
 	Dir  string
 	File string
+}
+
+type route struct {
+	cr      *regexp.Regexp
+	method  string
+	handler func(handler)
 }
 
 var routes = []route{
@@ -244,9 +255,10 @@ var routes = []route{
 }
 
 // Request handling function
-func HttpBackend(config *Config) http.HandlerFunc {
+func HTTPBackend(config *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for _, route := range routes {
+			r.URL.Path = strings.ToLower(r.URL.Path) // blue: In case some repo name has upper case name
 			if m := route.cr.FindStringSubmatch(r.URL.Path); m != nil {
 				if route.method != r.Method {
 					renderMethodNotAllowed(w, r)
@@ -284,9 +296,9 @@ func serviceReceivePack(hr handler) {
 
 func serviceRpc(rpc string, hr handler) {
 	w, r, dir := hr.w, hr.r, hr.Dir
+	defer r.Body.Close()
 
-	access := hasAccess(r, hr.Config, dir, rpc, true)
-	if access == false {
+	if !hasAccess(r, hr.Config, dir, rpc, true) {
 		renderNoAccess(w)
 		return
 	}
@@ -337,7 +349,6 @@ func serviceRpc(rpc string, hr handler) {
 	if hr.Config.OnSucceed != nil {
 		hr.Config.OnSucceed(rpc, input)
 	}
-	w.WriteHeader(http.StatusOK)
 }
 
 func getInfoRefs(hr handler) {
@@ -408,7 +419,7 @@ func sendFile(contentType string, hr handler) {
 }
 
 func getGitDir(config *Config, fPath string) (string, error) {
-	root := config.ReposRoot
+	root := config.RepoRootPath
 
 	if root == "" {
 		cwd, err := os.Getwd()

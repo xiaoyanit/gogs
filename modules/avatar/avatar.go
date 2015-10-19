@@ -19,9 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color/palette"
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,21 +32,57 @@ import (
 	"sync"
 	"time"
 
+	"github.com/issue9/identicon"
 	"github.com/nfnt/resize"
 
 	"github.com/gogits/gogs/modules/log"
+	"github.com/gogits/gogs/modules/setting"
 )
 
-var (
-	gravatar = "http://www.gravatar.com/avatar"
-)
+var gravatarSource string
+
+func UpdateGravatarSource() {
+	gravatarSource = setting.GravatarSource
+	if strings.HasPrefix(gravatarSource, "//") {
+		gravatarSource = "http:" + gravatarSource
+	} else if !strings.HasPrefix(gravatarSource, "http://") &&
+		!strings.HasPrefix(gravatarSource, "https://") {
+		gravatarSource = "http://" + gravatarSource
+	}
+	log.Debug("avatar.UpdateGravatarSource(update gavatar source): %s", gravatarSource)
+}
 
 // hash email to md5 string
-// keep this func in order to make this package indenpent
+// keep this func in order to make this package independent
 func HashEmail(email string) string {
+	// https://en.gravatar.com/site/implement/hash/
+	email = strings.TrimSpace(email)
+	email = strings.ToLower(email)
+
 	h := md5.New()
-	h.Write([]byte(strings.ToLower(email)))
+	h.Write([]byte(email))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+const _RANDOM_AVATAR_SIZE = 200
+
+// RandomImage generates and returns a random avatar image.
+func RandomImage(data []byte) (image.Image, error) {
+	randExtent := len(palette.WebSafe) - 32
+	rand.Seed(time.Now().UnixNano())
+	colorIndex := rand.Intn(randExtent)
+	backColorIndex := colorIndex - 1
+	if backColorIndex < 0 {
+		backColorIndex = randExtent - 1
+	}
+
+	// Size, background, forecolor
+	imgMaker, err := identicon.New(_RANDOM_AVATAR_SIZE,
+		palette.WebSafe[backColorIndex], palette.WebSafe[colorIndex:colorIndex+32]...)
+	if err != nil {
+		return nil, err
+	}
+	return imgMaker.Make(data), nil
 }
 
 // Avatar represents the avatar object.
@@ -115,21 +153,23 @@ func (this *Avatar) Encode(wr io.Writer, size int) (err error) {
 	if img, err = decodeImageFile(imgPath); err != nil {
 		return
 	}
-	m := resize.Resize(uint(size), 0, img, resize.Lanczos3)
+	m := resize.Resize(uint(size), 0, img, resize.NearestNeighbor)
 	return jpeg.Encode(wr, m, nil)
 }
 
 // get image from gravatar.com
 func (this *Avatar) Update() {
-	thunder.Fetch(gravatar+"/"+this.Hash+"?"+this.reqParams,
+	UpdateGravatarSource()
+	thunder.Fetch(gravatarSource+this.Hash+"?"+this.reqParams,
 		this.imagePath)
 }
 
 func (this *Avatar) UpdateTimeout(timeout time.Duration) (err error) {
+	UpdateGravatarSource()
 	select {
 	case <-time.After(timeout):
 		err = fmt.Errorf("get gravatar image %s timeout", this.Hash)
-	case err = <-thunder.GoFetch(gravatar+"/"+this.Hash+"?"+this.reqParams,
+	case err = <-thunder.GoFetch(gravatarSource+this.Hash+"?"+this.reqParams,
 		this.imagePath):
 	}
 	return err

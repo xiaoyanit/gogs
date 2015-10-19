@@ -25,13 +25,17 @@ var CmdDump = cli.Command{
 It can be used for backup and capture Gogs server image to send to maintainer`,
 	Action: runDump,
 	Flags: []cli.Flag{
+		cli.StringFlag{"config, c", "custom/conf/app.ini", "Custom configuration file path", ""},
 		cli.BoolFlag{"verbose, v", "show process details", ""},
 	},
 }
 
 func runDump(ctx *cli.Context) {
-	setting.NewConfigContext()
-	models.LoadModelsConfig()
+	if ctx.IsSet("config") {
+		setting.CustomConf = ctx.String("config")
+	}
+	setting.NewContext()
+	models.LoadConfigs()
 	models.SetEngine()
 
 	log.Printf("Dumping local repositories...%s", setting.RepoRootPath)
@@ -58,7 +62,7 @@ func runDump(ctx *cli.Context) {
 	workDir, _ := setting.WorkDir()
 	z.AddFile("gogs-repo.zip", path.Join(workDir, "gogs-repo.zip"))
 	z.AddFile("gogs-db.sql", path.Join(workDir, "gogs-db.sql"))
-	z.AddFile("custom/conf/app.ini", path.Join(workDir, "custom/conf/app.ini"))
+	z.AddDir("custom", path.Join(workDir, "custom"))
 	z.AddDir("log", path.Join(workDir, "log"))
 	// FIXME: SSH key file.
 	if err = z.Close(); err != nil {

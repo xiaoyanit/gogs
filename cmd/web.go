@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"crypto/tls"
 	"fmt"
 	"html/template"
 	"io/ioutil"
@@ -14,22 +15,28 @@ import (
 	"path"
 	"strings"
 
-	"github.com/Unknwon/macaron"
 	"github.com/codegangsta/cli"
-	"github.com/macaron-contrib/binding"
-	"github.com/macaron-contrib/cache"
-	"github.com/macaron-contrib/captcha"
-	"github.com/macaron-contrib/csrf"
-	"github.com/macaron-contrib/i18n"
-	"github.com/macaron-contrib/session"
-	"github.com/macaron-contrib/toolbox"
+	"github.com/go-macaron/binding"
+	"github.com/go-macaron/cache"
+	"github.com/go-macaron/captcha"
+	"github.com/go-macaron/csrf"
+	"github.com/go-macaron/gzip"
+	"github.com/go-macaron/i18n"
+	"github.com/go-macaron/session"
+	"github.com/go-macaron/toolbox"
+	"github.com/go-xorm/xorm"
+	"github.com/mcuadros/go-version"
+	"gopkg.in/ini.v1"
+	"gopkg.in/macaron.v1"
+
+	api "github.com/gogits/go-gogs-client"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/auth"
 	"github.com/gogits/gogs/modules/auth/apiv1"
 	"github.com/gogits/gogs/modules/avatar"
 	"github.com/gogits/gogs/modules/base"
-	"github.com/gogits/gogs/modules/git"
+	"github.com/gogits/gogs/modules/bindata"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
@@ -48,13 +55,22 @@ var CmdWeb = cli.Command{
 	Description: `Gogs web server is the only thing you need to run,
 and it takes care of all the other things for you`,
 	Action: runWeb,
-	Flags:  []cli.Flag{},
+	Flags: []cli.Flag{
+		cli.StringFlag{"port, p", "3000", "Temporary port number to prevent conflict", ""},
+		cli.StringFlag{"config, c", "custom/conf/app.ini", "Custom configuration file path", ""},
+	},
+}
+
+type VerChecker struct {
+	ImportPath string
+	Version    func() string
+	Expected   string
 }
 
 // checkVersion checks if binary matches the version of templates files.
 func checkVersion() {
 	// Templates.
-	data, err := ioutil.ReadFile(path.Join(setting.StaticRootPath, "templates/.VERSION"))
+	data, err := ioutil.ReadFile(setting.StaticRootPath + "/templates/.VERSION")
 	if err != nil {
 		log.Fatal(4, "Fail to read 'templates/.VERSION': %v", err)
 	}
@@ -63,32 +79,47 @@ func checkVersion() {
 	}
 
 	// Check dependency version.
-	macaronVer := git.MustParseVersion(strings.Join(strings.Split(macaron.Version(), ".")[:3], "."))
-	if macaronVer.LessThan(git.MustParseVersion("0.2.3")) {
-		log.Fatal(4, "Package macaron version is too old, did you forget to update?(github.com/Unknwon/macaron)")
+	checkers := []VerChecker{
+		{"github.com/go-xorm/xorm", func() string { return xorm.Version }, "0.4.3.0806"},
+		{"github.com/Unknwon/macaron", macaron.Version, "0.5.4"},
+		{"github.com/macaron-contrib/binding", binding.Version, "0.1.0"},
+		{"github.com/macaron-contrib/cache", cache.Version, "0.1.2"},
+		{"github.com/macaron-contrib/csrf", csrf.Version, "0.0.3"},
+		{"github.com/macaron-contrib/i18n", i18n.Version, "0.0.7"},
+		{"github.com/macaron-contrib/session", session.Version, "0.1.6"},
+		{"gopkg.in/ini.v1", ini.Version, "1.3.4"},
 	}
-	i18nVer := git.MustParseVersion(i18n.Version())
-	if i18nVer.LessThan(git.MustParseVersion("0.0.2")) {
-		log.Fatal(4, "Package i18n version is too old, did you forget to update?(github.com/macaron-contrib/i18n)")
-	}
-	sessionVer := git.MustParseVersion(session.Version())
-	if sessionVer.LessThan(git.MustParseVersion("0.0.5")) {
-		log.Fatal(4, "Package session version is too old, did you forget to update?(github.com/macaron-contrib/session)")
+	for _, c := range checkers {
+		if !version.Compare(c.Version(), c.Expected, ">=") {
+			log.Fatal(4, "Package '%s' version is too old(%s -> %s), did you forget to update?", c.ImportPath, c.Version(), c.Expected)
+		}
 	}
 }
 
 // newMacaron initializes Macaron instance.
 func newMacaron() *macaron.Macaron {
 	m := macaron.New()
-	m.Use(macaron.Logger())
+	if !setting.DisableRouterLog {
+		m.Use(macaron.Logger())
+	}
 	m.Use(macaron.Recovery())
 	if setting.EnableGzip {
-		m.Use(macaron.Gziper())
+		m.Use(gzip.Gziper())
+	}
+	if setting.Protocol == setting.FCGI {
+		m.SetURLPrefix(setting.AppSubUrl)
 	}
 	m.Use(macaron.Static(
 		path.Join(setting.StaticRootPath, "public"),
 		macaron.StaticOptions{
-			SkipLogging: !setting.DisableRouterLog,
+			SkipLogging: setting.DisableRouterLog,
+		},
+	))
+	m.Use(macaron.Static(
+		setting.AvatarUploadPath,
+		macaron.StaticOptions{
+			Prefix:      "avatars",
+			SkipLogging: setting.DisableRouterLog,
 		},
 	))
 	m.Use(macaron.Renderer(macaron.RenderOptions{
@@ -96,27 +127,33 @@ func newMacaron() *macaron.Macaron {
 		Funcs:      []template.FuncMap{base.TemplateFuncs},
 		IndentJSON: macaron.Env != macaron.PROD,
 	}))
+
+	localeNames, err := bindata.AssetDir("conf/locale")
+	if err != nil {
+		log.Fatal(4, "Fail to list locale files: %v", err)
+	}
+	localFiles := make(map[string][]byte)
+	for _, name := range localeNames {
+		localFiles[name] = bindata.MustAsset("conf/locale/" + name)
+	}
 	m.Use(i18n.I18n(i18n.Options{
 		SubURL:          setting.AppSubUrl,
-		Directory:       path.Join(setting.ConfRootPath, "locale"),
+		Files:           localFiles,
 		CustomDirectory: path.Join(setting.CustomPath, "conf/locale"),
 		Langs:           setting.Langs,
 		Names:           setting.Names,
 		Redirect:        true,
 	}))
 	m.Use(cache.Cacher(cache.Options{
-		Adapter:  setting.CacheAdapter,
-		Interval: setting.CacheInternal,
-		Conn:     setting.CacheConn,
+		Adapter:       setting.CacheAdapter,
+		AdapterConfig: setting.CacheConn,
+		Interval:      setting.CacheInternal,
 	}))
 	m.Use(captcha.Captchaer(captcha.Options{
 		SubURL: setting.AppSubUrl,
 	}))
-	m.Use(session.Sessioner(session.Options{
-		Provider: setting.SessionProvider,
-		Config:   *setting.SessionConfig,
-	}))
-	m.Use(csrf.Generate(csrf.Options{
+	m.Use(session.Sessioner(setting.SessionConfig))
+	m.Use(csrf.Csrfer(csrf.Options{
 		Secret:     setting.SecretKey,
 		SetCookie:  true,
 		Header:     "X-Csrf-Token",
@@ -134,7 +171,10 @@ func newMacaron() *macaron.Macaron {
 	return m
 }
 
-func runWeb(*cli.Context) {
+func runWeb(ctx *cli.Context) {
+	if ctx.IsSet("config") {
+		setting.CustomConf = ctx.String("config")
+	}
 	routers.GlobalInit()
 	checkVersion()
 
@@ -145,19 +185,18 @@ func runWeb(*cli.Context) {
 	ignSignInAndCsrf := middleware.Toggle(&middleware.ToggleOptions{DisableCsrf: true})
 	reqSignOut := middleware.Toggle(&middleware.ToggleOptions{SignOutRequire: true})
 
+	bind := binding.Bind
 	bindIgnErr := binding.BindIgnErr
 
 	// Routers.
 	m.Get("/", ignSignIn, routers.Home)
 	m.Get("/explore", ignSignIn, routers.Explore)
-	m.Get("/install", bindIgnErr(auth.InstallForm{}), routers.Install)
-	m.Post("/install", bindIgnErr(auth.InstallForm{}), routers.InstallPost)
-	m.Group("", func() {
-		m.Get("/pulls", user.Pulls)
-		m.Get("/issues", user.Issues)
-	}, reqSignIn)
+	m.Combo("/install", routers.InstallInit).Get(routers.Install).
+		Post(bindIgnErr(auth.InstallForm{}), routers.InstallPost)
+	m.Get("/^:type(issues|pulls)$", reqSignIn, user.Issues)
 
-	// API routers.
+	// ***** START: API *****
+	// FIXME: custom form error response.
 	m.Group("/api", func() {
 		m.Group("/v1", func() {
 			// Miscellaneous.
@@ -167,51 +206,86 @@ func runWeb(*cli.Context) {
 			// Users.
 			m.Group("/users", func() {
 				m.Get("/search", v1.SearchUsers)
+
+				m.Group("/:username", func() {
+					m.Get("", v1.GetUserInfo)
+
+					m.Group("/tokens", func() {
+						m.Combo("").Get(v1.ListAccessTokens).
+							Post(bind(v1.CreateAccessTokenForm{}), v1.CreateAccessToken)
+					}, middleware.ApiReqBasicAuth())
+				})
 			})
 
 			// Repositories.
+			m.Combo("/user/repos", middleware.ApiReqToken()).Get(v1.ListMyRepos).
+				Post(bind(api.CreateRepoOption{}), v1.CreateRepo)
+			m.Post("/org/:org/repos", middleware.ApiReqToken(), bind(api.CreateRepoOption{}), v1.CreateOrgRepo)
+
 			m.Group("/repos", func() {
 				m.Get("/search", v1.SearchRepos)
-				m.Post("/migrate", bindIgnErr(auth.MigrateRepoForm{}), v1.Migrate)
+
+				m.Group("", func() {
+					m.Post("/migrate", bindIgnErr(auth.MigrateRepoForm{}), v1.MigrateRepo)
+					m.Delete("/:username/:reponame", v1.DeleteRepo)
+				}, middleware.ApiReqToken())
+
+				m.Group("/:username/:reponame", func() {
+					m.Combo("/hooks").Get(v1.ListRepoHooks).
+						Post(bind(api.CreateHookOption{}), v1.CreateRepoHook)
+					m.Patch("/hooks/:id:int", bind(api.EditHookOption{}), v1.EditRepoHook)
+					m.Get("/raw/*", middleware.RepoRef(), v1.GetRepoRawFile)
+					m.Get("/archive/*", v1.GetRepoArchive)
+				}, middleware.ApiRepoAssignment(), middleware.ApiReqToken())
 			})
 
 			m.Any("/*", func(ctx *middleware.Context) {
-				ctx.JSON(404, &base.ApiJsonErr{"Not Found", v1.DOC_URL})
+				ctx.Error(404)
 			})
 		})
-	})
+	}, ignSignIn)
+	// ***** END: API *****
 
-	// User routers.
+	// ***** START: User *****
 	m.Group("/user", func() {
 		m.Get("/login", user.SignIn)
 		m.Post("/login", bindIgnErr(auth.SignInForm{}), user.SignInPost)
-		m.Get("/login/:name", user.SocialSignIn)
 		m.Get("/sign_up", user.SignUp)
 		m.Post("/sign_up", bindIgnErr(auth.RegisterForm{}), user.SignUpPost)
 		m.Get("/reset_password", user.ResetPasswd)
 		m.Post("/reset_password", user.ResetPasswdPost)
 	}, reqSignOut)
+
 	m.Group("/user/settings", func() {
 		m.Get("", user.Settings)
 		m.Post("", bindIgnErr(auth.UpdateProfileForm{}), user.SettingsPost)
+		m.Post("/avatar", binding.MultipartForm(auth.UploadAvatarForm{}), user.SettingsAvatar)
+		m.Combo("/email").Get(user.SettingsEmails).
+			Post(bindIgnErr(auth.AddEmailForm{}), user.SettingsEmailPost)
+		m.Post("/email/delete", user.DeleteEmail)
 		m.Get("/password", user.SettingsPassword)
 		m.Post("/password", bindIgnErr(auth.ChangePasswordForm{}), user.SettingsPasswordPost)
-		m.Get("/ssh", user.SettingsSSHKeys)
-		m.Post("/ssh", bindIgnErr(auth.AddSSHKeyForm{}), user.SettingsSSHKeysPost)
-		m.Get("/social", user.SettingsSocial)
+		m.Combo("/ssh").Get(user.SettingsSSHKeys).
+			Post(bindIgnErr(auth.AddSSHKeyForm{}), user.SettingsSSHKeysPost)
+		m.Post("/ssh/delete", user.DeleteSSHKey)
+		m.Combo("/applications").Get(user.SettingsApplications).
+			Post(bindIgnErr(auth.NewAccessTokenForm{}), user.SettingsApplicationsPost)
+		m.Post("/applications/delete", user.SettingsDeleteApplication)
 		m.Route("/delete", "GET,POST", user.SettingsDelete)
-	}, reqSignIn)
+	}, reqSignIn, func(ctx *middleware.Context) {
+		ctx.Data["PageIsUserSettings"] = true
+	})
+
 	m.Group("/user", func() {
 		// r.Get("/feeds", binding.Bind(auth.FeedsForm{}), user.Feeds)
 		m.Any("/activate", user.Activate)
+		m.Any("/activate_email", user.ActivateEmail)
 		m.Get("/email2user", user.Email2User)
 		m.Get("/forget_password", user.ForgotPasswd)
 		m.Post("/forget_password", user.ForgotPasswdPost)
 		m.Get("/logout", user.SignOut)
 	})
-
-	// FIXME: Legacy
-	m.Get("/user/:username", ignSignIn, user.Profile)
+	// ***** END: User *****
 
 	// Gravatar service.
 	avt := avatar.CacheServer("public/img/avatar/", "public/img/avatar_default.jpg")
@@ -220,6 +294,7 @@ func runWeb(*cli.Context) {
 
 	adminReq := middleware.Toggle(&middleware.ToggleOptions{SignInRequire: true, AdminRequire: true})
 
+	// ***** START: Admin *****
 	m.Group("/admin", func() {
 		m.Get("", adminReq, admin.Dashboard)
 		m.Get("/config", admin.Config)
@@ -228,7 +303,7 @@ func runWeb(*cli.Context) {
 		m.Group("/users", func() {
 			m.Get("", admin.Users)
 			m.Get("/new", admin.NewUser)
-			m.Post("/new", bindIgnErr(auth.RegisterForm{}), admin.NewUserPost)
+			m.Post("/new", bindIgnErr(auth.AdminCrateUserForm{}), admin.NewUserPost)
 			m.Get("/:userid", admin.EditUser)
 			m.Post("/:userid", bindIgnErr(auth.AdminEditUserForm{}), admin.EditUserPost)
 			m.Post("/:userid/delete", admin.DeleteUser)
@@ -246,8 +321,8 @@ func runWeb(*cli.Context) {
 			m.Get("", admin.Authentications)
 			m.Get("/new", admin.NewAuthSource)
 			m.Post("/new", bindIgnErr(auth.AuthenticationForm{}), admin.NewAuthSourcePost)
-			m.Get("/:authid", admin.EditAuthSource)
-			m.Post("/:authid", bindIgnErr(auth.AuthenticationForm{}), admin.EditAuthSourcePost)
+			m.Combo("/:authid").Get(admin.EditAuthSource).
+				Post(bindIgnErr(auth.AuthenticationForm{}), admin.EditAuthSourcePost)
 			m.Post("/:authid/delete", admin.DeleteAuthSource)
 		})
 
@@ -256,22 +331,53 @@ func runWeb(*cli.Context) {
 			m.Get("/:id:int/delete", admin.DeleteNotice)
 		})
 	}, adminReq)
+	// ***** END: Admin *****
 
-	m.Get("/:username", ignSignIn, user.Profile)
+	m.Group("", func() {
+		m.Get("/:username", user.Profile)
+		m.Get("/attachments/:uuid", func(ctx *middleware.Context) {
+			attach, err := models.GetAttachmentByUUID(ctx.Params(":uuid"))
+			if err != nil {
+				if models.IsErrAttachmentNotExist(err) {
+					ctx.Error(404)
+				} else {
+					ctx.Handle(500, "GetAttachmentByUUID", err)
+				}
+				return
+			}
+
+			fr, err := os.Open(attach.LocalPath())
+			if err != nil {
+				ctx.Handle(500, "Open", err)
+				return
+			}
+			defer fr.Close()
+
+			ctx.Header().Set("Cache-Control", "public,max-age=86400")
+			// Fix #312. Attachments with , in their name are not handled correctly by Google Chrome.
+			// We must put the name in " manually.
+			if err = repo.ServeData(ctx, "\""+attach.Name+"\"", fr); err != nil {
+				ctx.Handle(500, "ServeData", err)
+				return
+			}
+		})
+		m.Post("/issues/attachments", repo.UploadIssueAttachment)
+	}, ignSignIn)
 
 	if macaron.Env == macaron.DEV {
 		m.Get("/template/*", dev.TemplatePreview)
 	}
 
-	reqTrueOwner := middleware.RequireTrueOwner()
+	reqRepoAdmin := middleware.RequireRepoAdmin()
 
-	// Organization.
+	// ***** START: Organization *****
 	m.Group("/org", func() {
 		m.Get("/create", org.Create)
 		m.Post("/create", bindIgnErr(auth.CreateOrgForm{}), org.CreatePost)
 
 		m.Group("/:org", func() {
 			m.Get("/dashboard", user.Dashboard)
+			m.Get("/^:type(issues|pulls)$", user.Issues)
 			m.Get("/members", org.Members)
 			m.Get("/members/action/:action", org.MembersAction)
 
@@ -290,15 +396,21 @@ func runWeb(*cli.Context) {
 			m.Post("/teams/:team/delete", org.DeleteTeam)
 
 			m.Group("/settings", func() {
-				m.Get("", org.Settings)
-				m.Post("", bindIgnErr(auth.UpdateOrgSettingForm{}), org.SettingsPost)
-				m.Get("/hooks", org.SettingsHooks)
-				m.Get("/hooks/new", repo.WebHooksNew)
-				m.Post("/hooks/gogs/new", bindIgnErr(auth.NewWebhookForm{}), repo.WebHooksNewPost)
-				m.Post("/hooks/slack/new", bindIgnErr(auth.NewSlackHookForm{}), repo.SlackHooksNewPost)
-				m.Get("/hooks/:id", repo.WebHooksEdit)
-				m.Post("/hooks/gogs/:id", bindIgnErr(auth.NewWebhookForm{}), repo.WebHooksEditPost)
-				m.Post("/hooks/slack/:id", bindIgnErr(auth.NewSlackHookForm{}), repo.SlackHooksEditPost)
+				m.Combo("").Get(org.Settings).
+					Post(bindIgnErr(auth.UpdateOrgSettingForm{}), org.SettingsPost)
+				m.Post("/avatar", binding.MultipartForm(auth.UploadAvatarForm{}), org.SettingsAvatar)
+
+				m.Group("/hooks", func() {
+					m.Get("", org.Webhooks)
+					m.Post("/delete", org.DeleteWebhook)
+					m.Get("/:type/new", repo.WebhooksNew)
+					m.Post("/gogs/new", bindIgnErr(auth.NewWebhookForm{}), repo.WebHooksNewPost)
+					m.Post("/slack/new", bindIgnErr(auth.NewSlackHookForm{}), repo.SlackHooksNewPost)
+					m.Get("/:id", repo.WebHooksEdit)
+					m.Post("/gogs/:id", bindIgnErr(auth.NewWebhookForm{}), repo.WebHooksEditPost)
+					m.Post("/slack/:id", bindIgnErr(auth.NewSlackHookForm{}), repo.SlackHooksEditPost)
+				})
+
 				m.Route("/delete", "GET,POST", org.SettingsDelete)
 			})
 
@@ -307,102 +419,141 @@ func runWeb(*cli.Context) {
 	}, reqSignIn)
 	m.Group("/org", func() {
 		m.Get("/:org", org.Home)
-	}, middleware.OrgAssignment(true))
+	}, ignSignIn, middleware.OrgAssignment(true))
+	// ***** END: Organization *****
 
-	// Repository.
+	// ***** START: Repository *****
 	m.Group("/repo", func() {
 		m.Get("/create", repo.Create)
 		m.Post("/create", bindIgnErr(auth.CreateRepoForm{}), repo.CreatePost)
 		m.Get("/migrate", repo.Migrate)
 		m.Post("/migrate", bindIgnErr(auth.MigrateRepoForm{}), repo.MigratePost)
-		m.Get("/fork", repo.Fork)
-		m.Post("/fork", bindIgnErr(auth.CreateRepoForm{}), repo.ForkPost)
+		m.Combo("/fork/:repoid").Get(repo.Fork).
+			Post(bindIgnErr(auth.CreateRepoForm{}), repo.ForkPost)
 	}, reqSignIn)
 
 	m.Group("/:username/:reponame", func() {
-		m.Get("/settings", repo.Settings)
-		m.Post("/settings", bindIgnErr(auth.RepoSettingForm{}), repo.SettingsPost)
 		m.Group("/settings", func() {
-			m.Route("/collaboration", "GET,POST", repo.SettingsCollaboration)
-			m.Get("/hooks", repo.Webhooks)
-			m.Get("/hooks/new", repo.WebHooksNew)
-			m.Post("/hooks/gogs/new", bindIgnErr(auth.NewWebhookForm{}), repo.WebHooksNewPost)
-			m.Post("/hooks/slack/new", bindIgnErr(auth.NewSlackHookForm{}), repo.SlackHooksNewPost)
-			m.Get("/hooks/:id", repo.WebHooksEdit)
-			m.Post("/hooks/gogs/:id", bindIgnErr(auth.NewWebhookForm{}), repo.WebHooksEditPost)
-			m.Post("/hooks/slack/:id", bindIgnErr(auth.NewSlackHookForm{}), repo.SlackHooksEditPost)
+			m.Combo("").Get(repo.Settings).
+				Post(bindIgnErr(auth.RepoSettingForm{}), repo.SettingsPost)
+			m.Route("/collaboration", "GET,POST", repo.Collaboration)
 
-			m.Group("/hooks/git", func() {
-				m.Get("", repo.GitHooks)
-				m.Get("/:name", repo.GitHooksEdit)
-				m.Post("/:name", repo.GitHooksEditPost)
-			}, middleware.GitHookService())
+			m.Group("/hooks", func() {
+				m.Get("", repo.Webhooks)
+				m.Post("/delete", repo.DeleteWebhook)
+				m.Get("/:type/new", repo.WebhooksNew)
+				m.Post("/gogs/new", bindIgnErr(auth.NewWebhookForm{}), repo.WebHooksNewPost)
+				m.Post("/slack/new", bindIgnErr(auth.NewSlackHookForm{}), repo.SlackHooksNewPost)
+				m.Get("/:id", repo.WebHooksEdit)
+				m.Post("/gogs/:id", bindIgnErr(auth.NewWebhookForm{}), repo.WebHooksEditPost)
+				m.Post("/slack/:id", bindIgnErr(auth.NewSlackHookForm{}), repo.SlackHooksEditPost)
+
+				m.Group("/git", func() {
+					m.Get("", repo.GitHooks)
+					m.Combo("/:name").Get(repo.GitHooksEdit).
+						Post(repo.GitHooksEditPost)
+				}, middleware.GitHookService())
+			})
+
+			m.Group("/keys", func() {
+				m.Combo("").Get(repo.DeployKeys).
+					Post(bindIgnErr(auth.AddSSHKeyForm{}), repo.DeployKeysPost)
+				m.Post("/delete", repo.DeleteDeployKey)
+			})
+
 		})
-	}, reqSignIn, middleware.RepoAssignment(true), reqTrueOwner)
+	}, reqSignIn, middleware.RepoAssignment(true), reqRepoAdmin)
 
 	m.Group("/:username/:reponame", func() {
 		m.Get("/action/:action", repo.Action)
 
 		m.Group("/issues", func() {
-			m.Get("/new", repo.CreateIssue)
-			m.Post("/new", bindIgnErr(auth.CreateIssueForm{}), repo.CreateIssuePost)
-			m.Post("/:index", bindIgnErr(auth.CreateIssueForm{}), repo.UpdateIssue)
-			m.Post("/:index/label", repo.UpdateIssueLabel)
-			m.Post("/:index/milestone", repo.UpdateIssueMilestone)
-			m.Post("/:index/assignee", repo.UpdateAssignee)
-			m.Get("/:index/attachment/:id", repo.IssueGetAttachment)
-			m.Post("/labels/new", bindIgnErr(auth.CreateLabelForm{}), repo.NewLabel)
-			m.Post("/labels/edit", bindIgnErr(auth.CreateLabelForm{}), repo.UpdateLabel)
-			m.Post("/labels/delete", repo.DeleteLabel)
-			m.Get("/milestones", repo.Milestones)
-			m.Get("/milestones/new", repo.NewMilestone)
-			m.Post("/milestones/new", bindIgnErr(auth.CreateMilestoneForm{}), repo.NewMilestonePost)
-			m.Get("/milestones/:index/edit", repo.UpdateMilestone)
-			m.Post("/milestones/:index/edit", bindIgnErr(auth.CreateMilestoneForm{}), repo.UpdateMilestonePost)
-			m.Get("/milestones/:index/:action", repo.UpdateMilestone)
-		})
+			m.Combo("/new").Get(repo.NewIssue).
+				Post(bindIgnErr(auth.CreateIssueForm{}), repo.NewIssuePost)
 
-		m.Post("/comment/:action", repo.Comment)
-		m.Get("/releases/new", repo.NewRelease)
-		m.Get("/releases/edit/:tagname", repo.EditRelease)
+			m.Combo("/:index/comments").Post(bindIgnErr(auth.CreateCommentForm{}), repo.NewComment)
+			m.Group("/:index", func() {
+				m.Post("/label", repo.UpdateIssueLabel)
+				m.Post("/milestone", repo.UpdateIssueMilestone)
+				m.Post("/assignee", repo.UpdateIssueAssignee)
+			}, reqRepoAdmin)
+
+			m.Group("/:index", func() {
+				m.Post("/title", repo.UpdateIssueTitle)
+				m.Post("/content", repo.UpdateIssueContent)
+			})
+		})
+		m.Post("/comments/:id", repo.UpdateCommentContent)
+		m.Group("/labels", func() {
+			m.Post("/new", bindIgnErr(auth.CreateLabelForm{}), repo.NewLabel)
+			m.Post("/edit", bindIgnErr(auth.CreateLabelForm{}), repo.UpdateLabel)
+			m.Post("/delete", repo.DeleteLabel)
+		}, reqRepoAdmin)
+		m.Group("/milestones", func() {
+			m.Get("/new", repo.NewMilestone)
+			m.Post("/new", bindIgnErr(auth.CreateMilestoneForm{}), repo.NewMilestonePost)
+			m.Get("/:id/edit", repo.EditMilestone)
+			m.Post("/:id/edit", bindIgnErr(auth.CreateMilestoneForm{}), repo.EditMilestonePost)
+			m.Get("/:id/:action", repo.ChangeMilestonStatus)
+			m.Post("/delete", repo.DeleteMilestone)
+		}, reqRepoAdmin)
+
+		m.Group("/releases", func() {
+			m.Get("/new", repo.NewRelease)
+			m.Post("/new", bindIgnErr(auth.NewReleaseForm{}), repo.NewReleasePost)
+			m.Get("/edit/:tagname", repo.EditRelease)
+			m.Post("/edit/:tagname", bindIgnErr(auth.EditReleaseForm{}), repo.EditReleasePost)
+		}, reqRepoAdmin, middleware.RepoRef())
+
+		m.Combo("/compare/*").Get(repo.CompareAndPullRequest).
+			Post(bindIgnErr(auth.CreateIssueForm{}), repo.CompareAndPullRequestPost)
 	}, reqSignIn, middleware.RepoAssignment(true))
 
 	m.Group("/:username/:reponame", func() {
-		m.Post("/releases/new", bindIgnErr(auth.NewReleaseForm{}), repo.NewReleasePost)
-		m.Post("/releases/edit/:tagname", bindIgnErr(auth.EditReleaseForm{}), repo.EditReleasePost)
-	}, reqSignIn, middleware.RepoAssignment(true, true))
-
-	m.Group("/:username/:reponame", func() {
-		m.Get("/issues", repo.Issues)
-		m.Get("/issues/:index", repo.ViewIssue)
-		m.Get("/pulls", repo.Pulls)
+		m.Get("/releases", middleware.RepoRef(), repo.Releases)
+		m.Get("/^:type(issues|pulls)$", repo.RetrieveLabels, repo.Issues)
+		m.Get("/^:type(issues|pulls)$/:index", repo.ViewIssue)
+		m.Get("/labels/", repo.RetrieveLabels, repo.Labels)
+		m.Get("/milestones", repo.Milestones)
 		m.Get("/branches", repo.Branches)
 		m.Get("/archive/*", repo.Download)
-		m.Get("/issues2/", repo.Issues2)
+
+		m.Group("/pulls/:index", func() {
+			m.Get("/commits", repo.ViewPullCommits)
+			m.Get("/files", repo.ViewPullFiles)
+			m.Post("/merge", reqRepoAdmin, repo.MergePullRequest)
+		})
+
+		m.Group("", func() {
+			m.Get("/src/*", repo.Home)
+			m.Get("/raw/*", repo.SingleDownload)
+			m.Get("/commits/*", repo.RefCommits)
+			m.Get("/commit/*", repo.Diff)
+			m.Get("/stars", repo.Stars)
+			m.Get("/watchers", repo.Watchers)
+			m.Get("/forks", repo.Forks)
+		}, middleware.RepoRef())
+
+		m.Get("/compare/:before([a-z0-9]{40})...:after([a-z0-9]{40})", repo.CompareDiff)
 	}, ignSignIn, middleware.RepoAssignment(true))
 
-	m.Group("/:username/:reponame", func() {
-		m.Get("/src/:branchname", repo.Home)
-		m.Get("/src/:branchname/*", repo.Home)
-		m.Get("/raw/:branchname/*", repo.SingleDownload)
-		m.Get("/commits/:branchname", repo.Commits)
-		m.Get("/commits/:branchname/search", repo.SearchCommits)
-		m.Get("/commits/:branchname/*", repo.FileHistory)
-		m.Get("/commit/:branchname", repo.Diff)
-		m.Get("/commit/:branchname/*", repo.Diff)
-		m.Get("/releases", repo.Releases)
-		m.Get("/compare/:before([a-z0-9]+)...:after([a-z0-9]+)", repo.CompareDiff)
-	}, ignSignIn, middleware.RepoAssignment(true, true))
-
 	m.Group("/:username", func() {
-		m.Get("/:reponame", ignSignIn, middleware.RepoAssignment(true, true, true), repo.Home)
-		m.Any("/:reponame/*", ignSignInAndCsrf, repo.Http)
+		m.Group("/:reponame", func() {
+			m.Get("", repo.Home)
+			m.Get("\\.git$", repo.Home)
+		}, ignSignIn, middleware.RepoAssignment(true, true), middleware.RepoRef())
+
+		m.Group("/:reponame", func() {
+			m.Any("/*", ignSignInAndCsrf, repo.Http)
+			m.Head("/hooks/trigger", repo.TriggerHook)
+		})
 	})
+	// ***** END: Repository *****
 
 	// robots.txt
 	m.Get("/robots.txt", func(ctx *middleware.Context) {
 		if setting.HasRobotsTxt {
-			ctx.ServeFile(path.Join(setting.CustomPath, "robots.txt"))
+			ctx.ServeFileContent(path.Join(setting.CustomPath, "robots.txt"))
 		} else {
 			ctx.Error(404)
 		}
@@ -411,6 +562,12 @@ func runWeb(*cli.Context) {
 	// Not found handler.
 	m.NotFound(routers.NotFound)
 
+	// Flag for port number in case first time run conflict.
+	if ctx.IsSet("port") {
+		setting.AppUrl = strings.Replace(setting.AppUrl, setting.HttpPort, ctx.String("port"), 1)
+		setting.HttpPort = ctx.String("port")
+	}
+
 	var err error
 	listenAddr := fmt.Sprintf("%s:%s", setting.HttpAddr, setting.HttpPort)
 	log.Info("Listen: %v://%s%s", setting.Protocol, listenAddr, setting.AppSubUrl)
@@ -418,7 +575,8 @@ func runWeb(*cli.Context) {
 	case setting.HTTP:
 		err = http.ListenAndServe(listenAddr, m)
 	case setting.HTTPS:
-		err = http.ListenAndServeTLS(listenAddr, setting.CertFile, setting.KeyFile, m)
+		server := &http.Server{Addr: listenAddr, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS10}, Handler: m}
+		err = server.ListenAndServeTLS(setting.CertFile, setting.KeyFile)
 	case setting.FCGI:
 		err = fcgi.Serve(nil, m)
 	default:

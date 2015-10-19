@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Unknwon/macaron"
-	"github.com/macaron-contrib/cache"
-	"github.com/macaron-contrib/csrf"
-	"github.com/macaron-contrib/i18n"
-	"github.com/macaron-contrib/session"
+	"github.com/go-macaron/cache"
+	"github.com/go-macaron/csrf"
+	"github.com/go-macaron/i18n"
+	"github.com/go-macaron/session"
+	"gopkg.in/macaron.v1"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/auth"
@@ -26,6 +26,27 @@ import (
 	"github.com/gogits/gogs/modules/setting"
 )
 
+type RepoContext struct {
+	AccessMode   models.AccessMode
+	IsWatching   bool
+	IsBranch     bool
+	IsTag        bool
+	IsCommit     bool
+	Repository   *models.Repository
+	Owner        *models.User
+	Commit       *git.Commit
+	Tag          *git.Tag
+	GitRepo      *git.Repository
+	BranchName   string
+	TagName      string
+	TreeName     string
+	CommitID     string
+	RepoLink     string
+	CloneLink    models.CloneLink
+	CommitsCount int
+	Mirror       *models.Mirror
+}
+
 // Context represents context of a request.
 type Context struct {
 	*macaron.Context
@@ -34,35 +55,11 @@ type Context struct {
 	Flash   *session.Flash
 	Session session.Store
 
-	User     *models.User
-	IsSigned bool
+	User        *models.User
+	IsSigned    bool
+	IsBasicAuth bool
 
-	Repo struct {
-		IsOwner     bool
-		IsTrueOwner bool
-		IsWatching  bool
-		IsBranch    bool
-		IsTag       bool
-		IsCommit    bool
-		IsAdmin     bool // Current user is admin level.
-		HasAccess   bool
-		Repository  *models.Repository
-		Owner       *models.User
-		Commit      *git.Commit
-		Tag         *git.Tag
-		GitRepo     *git.Repository
-		BranchName  string
-		TagName     string
-		CommitId    string
-		RepoLink    string
-		CloneLink   struct {
-			SSH   string
-			HTTPS string
-			Git   string
-		}
-		CommitsCount int
-		Mirror       *models.Mirror
-	}
+	Repo RepoContext
 
 	Org struct {
 		IsOwner      bool
@@ -73,6 +70,21 @@ type Context struct {
 
 		Team *models.Team
 	}
+}
+
+// IsOwner returns true if current user is the owner of repository.
+func (r RepoContext) IsOwner() bool {
+	return r.AccessMode >= models.ACCESS_MODE_OWNER
+}
+
+// IsAdmin returns true if current user has admin or higher access of repository.
+func (r RepoContext) IsAdmin() bool {
+	return r.AccessMode >= models.ACCESS_MODE_ADMIN
+}
+
+// Return if the current user has read access for this repository
+func (r RepoContext) HasAccess() bool {
+	return r.AccessMode >= models.ACCESS_MODE_READ
 }
 
 // HasError returns true if error occurs in form validation.
@@ -97,6 +109,12 @@ func (ctx *Context) HasError() bool {
 	ctx.Flash.ErrorMsg = ctx.Data["ErrorMsg"].(string)
 	ctx.Data["Flash"] = ctx.Flash
 	return hasErr.(bool)
+}
+
+// HasValue returns true if value of given name exists.
+func (ctx *Context) HasValue(name string) bool {
+	_, ok := ctx.Data[name]
+	return ok
 }
 
 // HTML calls Context.HTML and converts template name to string.
@@ -132,6 +150,32 @@ func (ctx *Context) Handle(status int, title string, err error) {
 	ctx.HTML(status, base.TplName(fmt.Sprintf("status/%d", status)))
 }
 
+func (ctx *Context) HandleText(status int, title string) {
+	if (status/100 == 4) || (status/100 == 5) {
+		log.Error(4, "%s", title)
+	}
+	ctx.PlainText(status, []byte(title))
+}
+
+// APIError logs error with title if status is 500.
+func (ctx *Context) APIError(status int, title string, obj interface{}) {
+	var message string
+	if err, ok := obj.(error); ok {
+		message = err.Error()
+	} else {
+		message = obj.(string)
+	}
+
+	if status == 500 {
+		log.Error(4, "%s: %s", title, message)
+	}
+
+	ctx.JSON(status, map[string]string{
+		"message": message,
+		"url":     base.DOC_URL,
+	})
+}
+
 func (ctx *Context) ServeContent(name string, r io.ReadSeeker, params ...interface{}) {
 	modtime := time.Now()
 	for _, p := range params {
@@ -161,22 +205,31 @@ func Contexter() macaron.Handler {
 			Session: sess,
 		}
 		// Compute current URL for real-time change language.
-		link := setting.AppSubUrl + ctx.Req.RequestURI
-		i := strings.Index(link, "?")
-		if i > -1 {
-			link = link[:i]
-		}
-		ctx.Data["Link"] = link
+		ctx.Data["Link"] = setting.AppSubUrl + ctx.Req.URL.Path
 
 		ctx.Data["PageStartTime"] = time.Now()
 
+		// Check auto-signin.
+		if sess.Get("uid") == nil {
+			if _, err := AutoSignIn(ctx); err != nil {
+				ctx.Handle(500, "AutoSignIn", err)
+				return
+			}
+		}
+
 		// Get user from session if logined.
-		ctx.User = auth.SignedInUser(ctx.Req.Header, ctx.Session)
+		ctx.User, ctx.IsBasicAuth = auth.SignedInUser(ctx.Context, ctx.Session)
+
 		if ctx.User != nil {
 			ctx.IsSigned = true
 			ctx.Data["IsSigned"] = ctx.IsSigned
 			ctx.Data["SignedUser"] = ctx.User
+			ctx.Data["SignedUserID"] = ctx.User.Id
+			ctx.Data["SignedUserName"] = ctx.User.Name
 			ctx.Data["IsAdmin"] = ctx.User.IsAdmin
+		} else {
+			ctx.Data["SignedUserID"] = 0
+			ctx.Data["SignedUserName"] = ""
 		}
 
 		// If request sends files, parse them here otherwise the Query() can't be parsed and the CsrfToken will be invalid.
@@ -189,6 +242,9 @@ func Contexter() macaron.Handler {
 
 		ctx.Data["CsrfToken"] = x.GetToken()
 		ctx.Data["CsrfTokenHtml"] = template.HTML(`<input type="hidden" name="_csrf" value="` + x.GetToken() + `">`)
+
+		ctx.Data["ShowRegistrationButton"] = setting.Service.ShowRegistrationButton
+		ctx.Data["ShowFooterBranding"] = setting.ShowFooterBranding
 
 		c.Map(ctx)
 	}

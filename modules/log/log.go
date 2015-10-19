@@ -162,7 +162,7 @@ func newLogger(buffer int64) *Logger {
 	return l
 }
 
-// SetLogger sets new logger instanse with given logger adapter and config.
+// SetLogger sets new logger instance with given logger adapter and config.
 func (l *Logger) SetLogger(adapter string, config string) error {
 	l.lock.Lock()
 	defer l.lock.Unlock()
@@ -214,7 +214,11 @@ func (l *Logger) writerMsg(skip, level int, msg string) error {
 				fnName = strings.TrimLeft(filepath.Ext(fn.Name()), ".") + "()"
 			}
 
-			lm.msg = fmt.Sprintf("[%s:%d %s] %s", filepath.Base(file), line, fnName, msg)
+			fileName := file
+			if len(fileName) > 20 {
+				fileName = "..." + fileName[len(fileName)-20:]
+			}
+			lm.msg = fmt.Sprintf("[%s:%d %s] %s", fileName, line, fnName, msg)
 		} else {
 			lm.msg = msg
 		}

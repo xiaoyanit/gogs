@@ -61,7 +61,7 @@
                                     <dt>{{.i18n.Tr "admin.config.db_user"}}</dt>
                                     <dd>{{.DbCfg.User}}</dd>
                                     <dt>{{.i18n.Tr "admin.config.db_ssl_mode"}}</dt>
-                                    <dd>{{.DbCfg.SslMode}} {{.i18n.Tr "admin.config.db_ssl_mode_helper"}}</dd>
+                                    <dd>{{.DbCfg.SSLMode}} {{.i18n.Tr "admin.config.db_ssl_mode_helper"}}</dd>
                                     <dt>{{.i18n.Tr "admin.config.db_path"}}</dt>
                                     <dd>{{.DbCfg.Path}} {{.i18n.Tr "admin.config.db_path_helper"}}</dd>
                                 </dl>
@@ -78,12 +78,18 @@
                                     <dd><i class="fa fa{{if .Service.RegisterEmailConfirm}}-check{{end}}-square-o"></i></dd>
                                     <dt>{{.i18n.Tr "admin.config.disable_register"}}</dt>
                                     <dd><i class="fa fa{{if .Service.DisableRegistration}}-check{{end}}-square-o"></i></dd>
+                                    <dt>{{.i18n.Tr "admin.config.show_registration_button"}}</dt>
+                                    <dd><i class="fa fa{{if .Service.ShowRegistrationButton}}-check{{end}}-square-o"></i></dd>
                                     <dt>{{.i18n.Tr "admin.config.require_sign_in_view"}}</dt>
                                     <dd><i class="fa fa{{if .Service.RequireSignInView}}-check{{end}}-square-o"></i></dd>
-                                    <dt>{{.i18n.Tr "admin.config.mail_notify"}}</dt>
-                                    <dd><i class="fa fa{{if .Service.EnableNotifyMail}}-check{{end}}-square-o"></i></dd>
                                     <dt>{{.i18n.Tr "admin.config.enable_cache_avatar"}}</dt>
                                     <dd><i class="fa fa{{if .Service.EnableCacheAvatar}}-check{{end}}-square-o"></i></dd>
+                                    <dt>{{.i18n.Tr "admin.config.mail_notify"}}</dt>
+                                    <dd><i class="fa fa{{if .Service.EnableNotifyMail}}-check{{end}}-square-o"></i></dd>
+                                    <dt>{{.i18n.Tr "admin.config.disable_key_size_check"}}</dt>
+                                    <dd><i class="fa fa{{if .Service.DisableMinimumKeySizeCheck}}-check{{end}}-square-o"></i></dd>
+                                    <dt>{{.i18n.Tr "admin.config.enable_captcha"}}</dt>
+                                    <dd><i class="fa fa{{if .Service.EnableCaptcha}}-check{{end}}-square-o"></i></dd>
                                     <hr/>
                                     <dt>{{.i18n.Tr "admin.config.active_code_lives"}}</dt>
                                     <dd>{{.Service.ActiveCodeLives}} {{.i18n.Tr "tool.raw_minutes"}}</dd>
@@ -99,10 +105,12 @@
                             </div>
                             <div class="panel-body">
                                 <dl class="dl-horizontal admin-dl-horizontal">
-                                    <dt>{{.i18n.Tr "admin.config.task_interval"}}</dt>
-                                    <dd>{{.WebhookTaskInterval}} {{.i18n.Tr "tool.raw_minutes"}}</dd>
+                                    <dt>{{.i18n.Tr "admin.config.queue_length"}}</dt>
+                                    <dd>{{.Webhook.QueueLength}}</dd>
                                     <dt>{{.i18n.Tr "admin.config.deliver_timeout"}}</dt>
-                                    <dd>{{.WebhookDeliverTimeout}} {{.i18n.Tr "tool.raw_seconds"}}</dd>
+                                    <dd>{{.Webhook.DeliverTimeout}} {{.i18n.Tr "tool.raw_seconds"}}</dd>
+                                    <dt>{{.i18n.Tr "admin.config.skip_tls_verify"}}</dt>
+                                    <dd><i class="fa fa{{if .Webhook.SkipTLSVerify}}-check{{end}}-square-o"></i></dd>
                                 </dl>
                             </div>
                         </div>
@@ -117,31 +125,12 @@
                                     <dd><i class="fa fa{{if .MailerEnabled}}-check{{end}}-square-o"></i></dd>
                                     {{if .MailerEnabled}}<dt>{{.i18n.Tr "admin.config.mailer_name"}}</dt>
                                     <dd>{{.Mailer.Name}}</dd>
+                                    <dt>{{.i18n.Tr "admin.config.mailer_disable_helo"}}</dt>
+                                    <dd><i class="fa fa{{if .Mailer.DisableHelo}}-check{{end}}-square-o"></i></dd>
                                     <dt>{{.i18n.Tr "admin.config.mailer_host"}}</dt>
                                     <dd>{{.Mailer.Host}}</dd>
                                     <dt>{{.i18n.Tr "admin.config.mailer_user"}}</dt>
                                     <dd>{{.Mailer.User}}</dd>{{end}}
-                                </dl>
-                            </div>
-                        </div>
-                        <br>
-                        <div class="panel panel-radius">
-                            <div class="panel-header">
-                                <strong>{{.i18n.Tr "admin.config.oauth_config"}}</strong>
-                            </div>
-                            <div class="panel-body">
-                                <dl class="dl-horizontal admin-dl-horizontal">
-                                    <dt>{{.i18n.Tr "admin.config.oauth_enabled"}}</dt>
-                                    <dd><i class="fa fa{{if .OauthEnabled}}-check{{end}}-square-o"></i></dd>
-                                    {{if .OauthEnabled}}<dt>GitHub</dt>
-                                    <dd><i class="fa fa{{if .Oauther.GitHub}}-check{{end}}-square-o"></i></dd>
-                                    <dt>Google</dt>
-                                    <dd><i class="fa fa{{if .Oauther.Google}}-check{{end}}-square-o"></i></dd>
-                                    <dt>腾讯 QQ</dt>
-                                    <dd><i class="fa fa{{if .Oauther.Tencent}}-check{{end}}-square-o"></i></dd>
-                                    <dt>新浪微博</dt>
-                                    <dd><i class="fa fa{{if .Oauther.Weibo}}-check{{end}}-square-o"></i></dd>
-                                    {{end}}
                                 </dl>
                             </div>
                         </div>
@@ -169,13 +158,11 @@
                             <div class="panel-body">
                                 <dl class="dl-horizontal admin-dl-horizontal">
                                     <dt>{{.i18n.Tr "admin.config.session_provider"}}</dt>
-                                    <dd>{{.SessionProvider}}</dd>
+                                    <dd>{{.SessionConfig.Provider}}</dd>
                                     <dt>{{.i18n.Tr "admin.config.provider_config"}}</dt>
                                     <dd><pre>{{.SessionConfig.ProviderConfig}}</pre></dd>
                                     <dt>{{.i18n.Tr "admin.config.cookie_name"}}</dt>
                                     <dd>{{.SessionConfig.CookieName}}</dd>
-                                    <dt>{{.i18n.Tr "admin.config.enable_set_cookie"}}</dt>
-                                    <dd><i class="fa fa{{if .SessionConfig.EnableSetCookie}}-check{{end}}-square-o"></i></dd>
                                     <dt>{{.i18n.Tr "admin.config.gc_interval_time"}}</dt>
                                     <dd>{{.SessionConfig.Gclifetime}} {{.i18n.Tr "tool.raw_seconds"}}</dd>
                                     <dt>{{.i18n.Tr "admin.config.session_life_time"}}</dt>

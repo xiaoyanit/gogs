@@ -72,9 +72,9 @@
 }
 #repo-header-download-drop {
     line-height: 24px;
-    width: 440px;
+    width: 460px;
     top: 50px;
-    left: -370px;
+    left: -390px;
     padding: 20px;
     box-sizing: border-box;
     z-index: 1;
@@ -84,9 +84,14 @@
     button, input {
         font-size: 11px;
     }
+    #repo-clone-copy {
+        width: 85px;
+        text-overflow: clip;
+    }
 }
 #repo-content {
-    padding: 18px 0;
+    padding-top: 18px;
+    padding-bottom: 18px;
 }
 .repo-wide-wrapper {
     padding: 18px;
@@ -96,6 +101,7 @@
     border-right: none;
     width: 190px;
     border-left: none;
+    cursor: default;
 }
 #repo-clone-help {
     clear: both;
@@ -242,6 +248,9 @@
 }
 #repo-files-table {
     margin-bottom: 20px;
+    .sha .label {
+     font-family: Monaco,Menlo,Consolas,"Courier New",monospace;   
+    }
     th, td {
         text-align: left;
         line-height: 32px;
@@ -275,6 +284,11 @@
     td.msg a:hover {
         color: #428BCA;
         text-decoration: underline;
+    }
+    td.message {
+        .text-truncate {
+            max-width: 360px;
+        }
     }
     tbody {
         background-color: #FFF;
@@ -331,7 +345,7 @@
     #repo-header-meta {
         display: none;
     }
-    #repo-clone-ssh {
+    .btn-first {
         margin-left: 200px;
     }
     #repo-clone-copy {
@@ -379,6 +393,7 @@
 #repo-create-cancel {
     margin-left: 4em;
 }
+#release-new-target-branch-list,
 #repo-create-owner-list {
     top: 30px;
     left: 0;
@@ -405,6 +420,23 @@
             overflow: hidden;
         }
     }
+}
+#release-new-target-branch-list {
+    margin-top: -1px;
+    min-width: 150px;
+}
+#release-new-title {
+    margin-top: 10px;
+}
+#release-new-content {
+    width: 100%;
+}
+#release-preview-btn .btn {
+    border-left: 0;
+}
+#release-preview.markdown {
+    margin-top: 5px;
+    background-color: transparent;
 }
 .file-name {
     margin-left: 1em;
@@ -443,7 +475,7 @@
         width: 1%;
         span {
             font-family: Monaco,Menlo,Consolas,"Courier New",monospace;
-            line-height: 1.6;
+            line-height: 20px;
             padding: 0 10px;  
             cursor: pointer;
             display: block;
@@ -454,6 +486,7 @@
         border-left: 1px solid #ddd;
         > ol.linenums > li {
             padding: 0 10px;
+            line-height: 20px;
             &.active {
                 background: #ffffdd;
             }
@@ -530,6 +563,11 @@
         }
     }
 }
+
+.commit-message {
+	white-space: pre-wrap;
+}
+
 .diff-head-box {
     margin-top: 10px;
     .panel-body {
@@ -619,17 +657,31 @@
                         background-color: #E0E0E0 !important;
                         border-color: #ADADAD !important;
                     }
+                    td.selected-line, td.selected-line pre {
+                        background-color: #ffffdd !important;
+                    }
+                }
+                &.same-code {
+                    td.selected-line, td.selected-line pre {
+                        background-color: #ffffdd !important;
+                    }
                 }
                 &.del-code {
                     td, pre {
                         background-color: #ffe2dd !important;
                         border-color: #e9aeae !important;
                     }
+                    td.selected-line, td.selected-line pre {
+                        background-color: #ffffdd !important;
+                    }
                 }
                 &.add-code {
                     td, pre { 
                         background-color: #d1ffd6 !important;
                         border-color: #b4e2b4 !important;
+                    }
+                    td.selected-line, td.selected-line pre {
+                        background-color: #ffffdd !important;
                     }
                 }
                 &:hover {
@@ -655,4 +707,172 @@
     white-space: nowrap;
     margin-left: 44px;
     margin-top: -15px;
+}
+#release {
+    h4 {
+        font-size: 18px;
+        small {
+            font-weight: 400;
+            line-height: 1;
+            color: #999;
+        }
+    }
+    #release-head {
+        margin-top: 0;
+        margin-bottom: 0;
+        padding-bottom: 20px;
+        border-bottom: 1px solid #DDD;
+        .btn {
+            margin-left: 10px;
+        }
+    }
+    .release-item {
+        &>div {
+            padding-top: 20px;
+            padding-bottom: 20px;
+        }
+        .label-green:hover {
+            background-color: @labelGreenColor;
+        }
+        .release-meta {
+            position: relative;
+            float: left;
+            padding-right: 15px;
+        }
+        .tag, 
+        .commit {
+            display: block;
+            margin-top: 12px;
+            line-height: 20px;
+        }
+        .release-detail {
+            margin-top: -1px;
+            border-left: 1px solid #DDD;
+            position: relative;
+            float: left;
+            padding-left: 15px;
+        }
+        .title {
+            line-height: 25px;
+            margin-top: 0;
+        }
+        p.info {
+            line-height: 20px;
+            color: #666;
+            margin-bottom: 15px;
+            >* {
+                margin-right: 10px;
+            }
+        }
+        .author {
+            img {
+                margin-top: -3px;
+            }
+        }
+        div.desc {
+            margin-bottom: 25px;
+            &.markdown {
+                background-color: transparent;
+            }
+        }
+        .download a {
+            margin-right: 10px;
+        }
+        .dot {
+            width: 9px;
+            height: 9px;
+            background-color: #ccc;
+            z-index: 999;
+            position: absolute;
+            display: block;
+            left: -6px;
+            top: 27px;
+            border-radius: 6px;
+            border: 1px solid #FFF;
+        }
+    }
+    #release-new-form {
+        padding-top: 15px;
+    }
+}
+
+#stars, #watchers, #forks {
+    h4 {
+        font-size: 18px;
+        padding-bottom: 20px;
+        text-transform: capitalize;
+        border-bottom: 1px solid #DDD;
+    }
+
+    h3 {
+        margin: -4px 0 0 0;
+        padding: 0;
+    }
+
+    .avatar {
+        width: 75px;
+        height: 75px;
+        float: left;
+        display: block;
+        margin-right: 10px;
+    }
+
+    .avatar-small {
+        width: 24px;
+        height: 24px;
+        float: left;
+        display: block;
+        margin-right: 10px;
+    }
+
+    ol {
+        margin-top: 10px;
+        list-style: none;
+        width: 100%;
+        overflow: hidden;
+    }
+
+    li {
+        width: 32.25%;
+        margin: 10px 10px 10px 0;
+        border-bottom: 1px solid #DDD;
+        float: left;
+        padding-bottom: 10px;
+    }
+
+    .pagination {
+        width: 100%;
+        text-align: center;
+        text-transform: capitalize;
+
+        a {
+            border-radius: 3px;
+            border: 1px solid #399ADE;
+            padding: 8px;
+            margin: 0;
+        }
+
+        .active {
+            border-radius: 3px;
+            border: 1px solid #399ADE;
+            background: #399ADE;
+            cursor: default;
+            padding: 8px;
+            margin: 0;
+            color: #FFFFFF;
+        }
+
+        .disabled {
+            border-radius: 3px;
+            border: 1px solid #DDD;
+            color: #D3D3D3;
+            cursor: default;
+            padding: 8px;
+            margin: 0;
+        }
+    }
+}
+
+#forks p {
+    padding: 5px 0;
 }

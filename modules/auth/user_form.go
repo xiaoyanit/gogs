@@ -5,31 +5,46 @@
 package auth
 
 import (
-	"github.com/Unknwon/macaron"
-	"github.com/macaron-contrib/binding"
+	"mime/multipart"
+
+	"github.com/go-macaron/binding"
+	"gopkg.in/macaron.v1"
 )
 
 type InstallForm struct {
-	Database        string `form:"database" binding:"Required"`
-	DbHost          string `form:"host"`
-	DbUser          string `form:"user"`
-	DbPasswd        string `form:"passwd"`
-	DatabaseName    string `form:"database_name"`
-	SslMode         string `form:"ssl_mode"`
-	DatabasePath    string `form:"database_path"`
-	RepoRootPath    string `form:"repo_path" binding:"Required"`
-	RunUser         string `form:"run_user" binding:"Required"`
-	Domain          string `form:"domain" binding:"Required"`
-	AppUrl          string `form:"app_url" binding:"Required"`
-	SmtpHost        string `form:"smtp_host"`
-	SmtpEmail       string `form:"mailer_user"`
-	SmtpPasswd      string `form:"mailer_pwd"`
-	RegisterConfirm string `form:"register_confirm"`
-	MailNotify      string `form:"mail_notify"`
-	AdminName       string `form:"admin_name" binding:"Required;AlphaDashDot;MaxSize(30)"`
-	AdminPasswd     string `form:"admin_pwd" binding:"Required;MinSize(6);MaxSize(255)"`
-	ConfirmPasswd   string `form:"confirm_passwd" binding:"Required;MinSize(6);MaxSize(255)"`
-	AdminEmail      string `form:"admin_email" binding:"Required;Email;MaxSize(50)"`
+	DbType   string `binding:"Required"`
+	DbHost   string
+	DbUser   string
+	DbPasswd string
+	DbName   string
+	SSLMode  string
+	DbPath   string
+
+	AppName      string `binding:"Required" locale:"install.app_name"`
+	RepoRootPath string `binding:"Required"`
+	RunUser      string `binding:"Required"`
+	Domain       string `binding:"Required"`
+	SSHPort      int
+	HTTPPort     string `binding:"Required"`
+	AppUrl       string `binding:"Required"`
+
+	SMTPHost        string
+	SMTPFrom        string
+	SMTPEmail       string `binding:"OmitEmpty;Email;MaxSize(50)" locale:"install.mailer_user"`
+	SMTPPasswd      string
+	RegisterConfirm bool
+	MailNotify      bool
+
+	OfflineMode         bool
+	DisableGravatar     bool
+	DisableRegistration bool
+	EnableCaptcha       bool
+	RequireSignInView   bool
+
+	AdminName          string `binding:"OmitEmpty;AlphaDashDot;MaxSize(30)" locale:"install.admin_name"`
+	AdminPasswd        string `binding:"OmitEmpty;MaxSize(255)" locale:"install.admin_password"`
+	AdminConfirmPasswd string
+	AdminEmail         string `binding:"OmitEmpty;Email;MaxSize(50)" locale:"install.admin_email"`
 }
 
 func (f *InstallForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
@@ -44,12 +59,10 @@ func (f *InstallForm) Validate(ctx *macaron.Context, errs binding.Errors) bindin
 //         \/                         \/
 
 type RegisterForm struct {
-	UserName  string `form:"uname" binding:"Required;AlphaDashDot;MaxSize(35)"`
-	Email     string `form:"email" binding:"Required;Email;MaxSize(50)"`
-	Password  string `form:"password" binding:"Required;MinSize(6);MaxSize(255)"`
-	Retype    string `form:"retype"`
-	LoginType string `form:"logintype"`
-	LoginName string `form:"loginname"`
+	UserName string `binding:"Required;AlphaDashDot;MaxSize(35)"`
+	Email    string `binding:"Required;Email;MaxSize(254)"`
+	Password string `binding:"Required;MaxSize(255)"`
+	Retype   string
 }
 
 func (f *RegisterForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
@@ -57,9 +70,9 @@ func (f *RegisterForm) Validate(ctx *macaron.Context, errs binding.Errors) bindi
 }
 
 type SignInForm struct {
-	UserName string `form:"uname" binding:"Required;MaxSize(35)"`
-	Password string `form:"password" binding:"Required;MinSize(6);MaxSize(255)"`
-	Remember bool   `form:"remember"`
+	UserName string `binding:"Required;MaxSize(254)"`
+	Password string `binding:"Required;MaxSize(255)"`
+	Remember bool
 }
 
 func (f *SignInForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
@@ -74,24 +87,58 @@ func (f *SignInForm) Validate(ctx *macaron.Context, errs binding.Errors) binding
 //         \/         \/                                   \/        \/        \/
 
 type UpdateProfileForm struct {
-	UserName string `form:"uname" binding:"Required;MaxSize(35)"`
-	FullName string `form:"fullname" binding:"MaxSize(100)"`
-	Email    string `form:"email" binding:"Required;Email;MaxSize(50)"`
-	Website  string `form:"website" binding:"Url;MaxSize(100)"`
-	Location string `form:"location" binding:"MaxSize(50)"`
-	Avatar   string `form:"avatar" binding:"Required;Email;MaxSize(50)"`
+	Name     string `binding:"Required;MaxSize(35)"`
+	FullName string `binding:"MaxSize(100)"`
+	Email    string `binding:"Required;Email;MaxSize(254)"`
+	Website  string `binding:"Url;MaxSize(100)"`
+	Location string `binding:"MaxSize(50)"`
+	Gravatar string `binding:"Required;Email;MaxSize(254)"`
 }
 
 func (f *UpdateProfileForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
 	return validate(errs, ctx.Data, f, ctx.Locale)
 }
 
+type UploadAvatarForm struct {
+	Enable bool
+	Avatar *multipart.FileHeader
+}
+
+func (f *UploadAvatarForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
+	return validate(errs, ctx.Data, f, ctx.Locale)
+}
+
+type AddEmailForm struct {
+	Email string `binding:"Required;Email;MaxSize(254)"`
+}
+
+func (f *AddEmailForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
+	return validate(errs, ctx.Data, f, ctx.Locale)
+}
+
 type ChangePasswordForm struct {
-	OldPassword string `form:"old_password" binding:"Required;MinSize(6);MaxSize(255)"`
-	Password    string `form:"password" binding:"Required;MinSize(6);MaxSize(255)"`
+	OldPassword string `form:"old_password" binding:"Required;MinSize(1);MaxSize(255)"`
+	Password    string `form:"password" binding:"Required;MaxSize(255)"`
 	Retype      string `form:"retype"`
 }
 
 func (f *ChangePasswordForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
+	return validate(errs, ctx.Data, f, ctx.Locale)
+}
+
+type AddSSHKeyForm struct {
+	Title   string `binding:"Required;MaxSize(50)"`
+	Content string `binding:"Required"`
+}
+
+func (f *AddSSHKeyForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
+	return validate(errs, ctx.Data, f, ctx.Locale)
+}
+
+type NewAccessTokenForm struct {
+	Name string `binding:"Required"`
+}
+
+func (f *NewAccessTokenForm) Validate(ctx *macaron.Context, errs binding.Errors) binding.Errors {
 	return validate(errs, ctx.Data, f, ctx.Locale)
 }

@@ -7,20 +7,25 @@ package base
 import (
 	"container/list"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html/template"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/gogits/gogs/modules/mahonia"
+	"golang.org/x/net/html/charset"
+	"golang.org/x/text/transform"
+
+	"github.com/gogits/chardet"
 	"github.com/gogits/gogs/modules/setting"
-	"github.com/saintfish/chardet"
 )
 
-func Str2html(raw string) template.HTML {
+func Safe(raw string) template.HTML {
 	return template.HTML(raw)
+}
+
+func Str2html(raw string) template.HTML {
+	return template.HTML(Sanitizer.Sanitize(raw))
 }
 
 func Range(l int) []int {
@@ -40,6 +45,10 @@ func List(l *list.List) chan interface{} {
 	return c
 }
 
+func Sha1(str string) string {
+	return EncodeSha1(str)
+}
+
 func ShortSha(sha1 string) string {
 	if len(sha1) == 40 {
 		return sha1[:10]
@@ -47,22 +56,39 @@ func ShortSha(sha1 string) string {
 	return sha1
 }
 
-func ToUtf8WithErr(content []byte) (error, string) {
+func DetectEncoding(content []byte) (string, error) {
 	detector := chardet.NewTextDetector()
 	result, err := detector.DetectBest(content)
+	if result.Charset != "UTF-8" && len(setting.AnsiCharset) > 0 {
+		return setting.AnsiCharset, err
+	}
+	return result.Charset, err
+}
+
+func ToUtf8WithErr(content []byte) (error, string) {
+	charsetLabel, err := DetectEncoding(content)
 	if err != nil {
 		return err, ""
 	}
 
-	if result.Charset == "utf8" {
+	if charsetLabel == "UTF-8" {
 		return nil, string(content)
 	}
 
-	decoder := mahonia.NewDecoder(result.Charset)
-	if decoder != nil {
-		return nil, decoder.ConvertString(string(content))
+	encoding, _ := charset.Lookup(charsetLabel)
+	if encoding == nil {
+		return fmt.Errorf("unknown char decoder %s", charsetLabel), string(content)
 	}
-	return errors.New("unknow char decoder"), string(content)
+
+	result, n, err := transform.String(encoding.NewDecoder(), string(content))
+
+	// If there is an error, we concatenate the nicely decoded part and the
+	// original left over. This way we won't loose data.
+	if err != nil {
+		result = result + string(content[n:])
+	}
+
+	return err, result
 }
 
 func ToUtf8(content string) string {
@@ -70,8 +96,42 @@ func ToUtf8(content string) string {
 	return res
 }
 
-var mailDomains = map[string]string{
-	"gmail.com": "gmail.com",
+// Replaces all prefixes 'old' in 's' with 'new'.
+func ReplaceLeft(s, old, new string) string {
+	old_len, new_len, i, n := len(old), len(new), 0, 0
+	for ; i < len(s) && strings.HasPrefix(s[i:], old); n += 1 {
+		i += old_len
+	}
+
+	// simple optimization
+	if n == 0 {
+		return s
+	}
+
+	// allocating space for the new string
+	newLen := n*new_len + len(s[i:])
+	replacement := make([]byte, newLen, newLen)
+
+	j := 0
+	for ; j < n*new_len; j += new_len {
+		copy(replacement[j:j+new_len], new)
+	}
+
+	copy(replacement[j:], s[i:])
+	return string(replacement)
+}
+
+// RenderCommitMessage renders commit message with XSS-safe and special links.
+func RenderCommitMessage(msg, urlPrefix string) template.HTML {
+	cleanMsg := template.HTMLEscapeString(msg)
+	fullMessage := string(RenderIssueIndexPattern([]byte(cleanMsg), urlPrefix))
+	msgLines := strings.Split(strings.TrimSpace(fullMessage), "\n")
+	for i := range msgLines {
+		msgLines[i] = ReplaceLeft(msgLines[i], " ", "&nbsp;")
+	}
+
+	fullMessage = strings.Join(msgLines, "<br>")
+	return template.HTML(fullMessage)
 }
 
 var TemplateFuncs template.FuncMap = map[string]interface{}{
@@ -90,35 +150,36 @@ var TemplateFuncs template.FuncMap = map[string]interface{}{
 	"AppDomain": func() string {
 		return setting.Domain
 	},
-	"CdnMode": func() bool {
-		return setting.ProdMode && !setting.OfflineMode
+	"DisableGravatar": func() bool {
+		return setting.DisableGravatar
 	},
 	"LoadTimes": func(startTime time.Time) string {
 		return fmt.Sprint(time.Since(startTime).Nanoseconds()/1e6) + "ms"
 	},
-	"AvatarLink": AvatarLink,
-	"str2html":   Str2html, // TODO: Legacy
-	"Str2html":   Str2html,
-	"TimeSince":  TimeSince,
-	"FileSize":   FileSize,
-	"Subtract":   Subtract,
+	"AvatarLink":   AvatarLink,
+	"Safe":         Safe,
+	"Str2html":     Str2html,
+	"TimeSince":    TimeSince,
+	"RawTimeSince": RawTimeSince,
+	"FileSize":     FileSize,
+	"Subtract":     Subtract,
 	"Add": func(a, b int) int {
 		return a + b
 	},
 	"ActionIcon": ActionIcon,
-	"DateFormat": DateFormat,
-	"List":       List,
+	"DateFmtLong": func(t time.Time) string {
+		return t.Format(time.RFC1123Z)
+	},
+	"DateFmtShort": func(t time.Time) string {
+		return t.Format("Jan 02, 2006")
+	},
+	"List": List,
 	"Mail2Domain": func(mail string) string {
 		if !strings.Contains(mail, "@") {
 			return "try.gogs.io"
 		}
 
-		suffix := strings.SplitN(mail, "@", 2)[1]
-		domain, ok := mailDomains[suffix]
-		if !ok {
-			return "mail." + suffix
-		}
-		return domain
+		return strings.SplitN(mail, "@", 2)[1]
 	},
 	"SubStr": func(str string, start, length int) string {
 		if len(str) == 0 {
@@ -135,12 +196,17 @@ var TemplateFuncs template.FuncMap = map[string]interface{}{
 	},
 	"DiffTypeToStr":     DiffTypeToStr,
 	"DiffLineTypeToStr": DiffLineTypeToStr,
+	"Sha1":              Sha1,
 	"ShortSha":          ShortSha,
 	"Md5":               EncodeMd5,
 	"ActionContent2Commits": ActionContent2Commits,
 	"Oauth2Icon":            Oauth2Icon,
 	"Oauth2Name":            Oauth2Name,
 	"ToUtf8":                ToUtf8,
+	"EscapePound": func(str string) string {
+		return strings.Replace(strings.Replace(str, "%", "%25", -1), "#", "%23", -1)
+	},
+	"RenderCommitMessage": RenderCommitMessage,
 }
 
 type Actioner interface {
@@ -149,8 +215,12 @@ type Actioner interface {
 	GetActEmail() string
 	GetRepoUserName() string
 	GetRepoName() string
+	GetRepoPath() string
+	GetRepoLink() string
 	GetBranch() string
 	GetContent() string
+	GetCreate() time.Time
+	GetIssueInfos() []string
 }
 
 // ActionIcon accepts a int that represents action operation type

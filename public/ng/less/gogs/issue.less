@@ -223,19 +223,19 @@ textarea#issue-add-content {
 }
 // #issue list navigator
 #issue-list-nav {
+  border-bottom: 1px solid #DDD;
+  padding-bottom: 12px;
   li {
     > a {
       font-size: 13px;
       font-weight: bold;
-      padding: .4em .9em;
-      border-radius: .3em;
+      padding: .2em .8em;
     }
   }
   li.current {
     > a {
       background-color: #0079bc;
       color: #FAFAFA;
-      border-radius: .3em;
     }
   }
   li.right {
@@ -243,11 +243,13 @@ textarea#issue-add-content {
   }
 }
 // new issue button
-#issue-new {
+#issue-new,
+#label-new,
+#milestone-new{
   > a {
     padding: 0 !important;
     button {
-      height: 34px;
+      height: 29px;
     }
   }
 }
@@ -282,7 +284,8 @@ textarea#issue-add-content {
   }
 }
 // each issue list item
-#issue-list {
+#issue-list,
+#pull-list {
   .item {
     position: relative;
     padding-bottom: 12px;
@@ -315,8 +318,223 @@ textarea#issue-add-content {
     }
   }
 }
+// issue list filter
+#issue-list-filter{
+  .drop > a{
+    width: 90px;
+    padding: 0;
+    margin-left: 12px;
+    text-align: center;
+  }
+  .drop-down{
+    z-index: 999;
+    width: 236px;
+    left:-158px; // 260 - 90 - 12
+    top:22px;
+    padding: 0 12px;
+    h4{
+      line-height: 40px;
+      border-bottom: 1px solid #CCC;
+      margin-bottom: 0;
+    }
+    li{
+      line-height: 30px;
+      border-bottom: 1px dashed #EEE;
+      padding-left: 9px;
+      &:hover{
+        background-color: #fcffec;
+      }
+    }
+    > ul > li > a{
+      display: block;
+    }
+  }
+  .labels{
+    .color{
+      margin-top: 8px;
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      background-color: red;
+      margin-right: 9px;
+      margin-left: 9px;
+    }
+    .name{
+      vertical-align: top;
+      display: inline-block;
+      color: #444;
+    }
+  }
+  .milestones{
+    a{
+      color: #444;
+      font-weight: bold;
+    }
+  }
+}
 // issue list pager
 #issue-list-pager {
   margin: 18px 0 24px 0;
   font-size: 14px;
+  line-height: 24px;
+}
+// labels numbers
+#labels-num {
+  margin-right: 1em;
+}
+// labels list
+#label-list {
+  a.right {
+    margin-left: 1em;
+    color: #999;
+    i {
+      margin-right: 3px;
+    }
+    line-height: 30px;
+    &:hover {
+      color: #444444;
+    }
+  }
+  .num {
+    margin-right: 3px;
+  }
+  .issue-num {
+    margin-right: 4em;
+  }
+  .label {
+    &:hover {
+      color: #FFF;
+    }
+    i {
+      margin-right: 6px;
+    }
+  }
+  .item {
+    height: 30px;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px dashed #AAA;
+  }
+}
+// label add form, label edit form
+#label-add-form,
+#label-edit-form,
+#label-delete-form{
+  .ipt{
+    font-size: 14px;
+  }
+  .ipt[name=name]{
+    width: 300px;
+  }
+  .btn{
+    height: 33px;
+    font-size: 14px;
+    margin-left: 12px;
+  }
+}
+#label-add-form{
+  padding: 18px 0;
+  border-bottom: 1px solid #DDD;
+}
+#label-delete-form{
+  span{
+    line-height: 33px;
+  }
+}
+// label color drop
+.label-color-drop{
+  .ipt{
+    width:100px;
+  }
+  .drop-down{
+    width:128px !important;
+    top:22px !important;
+    left:50px !important;
+    padding: 12px;
+    line-height: 16px;
+    a.color{
+      width: 16px;
+      height: 16px;
+      display: inline-block;
+    }
+  }
+  label{
+    width: 24px;
+    height: 24px;
+    display: inline-block;
+    margin: 0 1em;
+    vertical-align: middle;
+  }
+}
+// milestone items
+#milestone-list{
+  padding-top: 6px;
+  .title-text{
+    font-size: 16px;
+  }
+  .desc {
+    color: #999;
+    line-height: 30px;
+  }
+  .content{
+    width: 400px;
+  }
+  .item {
+    padding-bottom: 18px;
+    margin-bottom: 18px;
+    border-bottom: 1px dashed #AAA;
+    position: relative;
+  }
+  .action{
+    position: absolute;
+    top: 0;
+    right: 0;
+  }
+  .status-bar {
+    > .bar {
+      margin: -2px 8px 0 8px;
+      width: 360px;
+      background-color: #DDD;
+      height: 14px;
+      vertical-align:middle;
+    }
+    .opening{
+      background-color: #65ad4e;
+      width: 40%;
+      height: 14px;
+      vertical-align: top;
+    }
+  }
+  .action-bar{
+    margin-top: 8px;
+    a{
+      margin-left: 12px;
+    }
+  }
+}
+
+.issues.list-group {
+	margin: 10px 0 20px 0;
+	> .list-group-item {
+  		background-color: #FFF;
+		border: 1px solid #e5e5e5;
+		display: block;
+  		padding: 10px 15px;
+  		margin-bottom: -1px;
+  		&:hover {
+		  background-color: rgba(19, 95, 215, 0.03);
+		}
+  		> .title {
+		  margin-bottom: 16px;
+		  font-weight: bold;
+		  font-size: 1.2em;
+		  > a { color: #444; }
+		}
+		> .info span {
+		  margin-right: 12px;
+		  color: #888;
+		  line-height: 20px;
+		  > a { color: #444; }
+		}
+	}
 }

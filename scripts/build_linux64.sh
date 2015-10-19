@@ -1,21 +1,27 @@
-rm -rf output_linux_64
-mkdir output_linux_64
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ../gogs.go
+outPlattform=linux
+outArch=amd64
+outPath=./output_$outPlattform_$outArch
+
+rm -rf $outPath
+mkdir $outPath
+
+CGO_ENABLED=0 GOOS=$outPlattform GOARCH=$outArch go build ../gogs.go
 chmod +x gogs
-mv gogs ./output_linux_64/
-cp -r ../conf/ ./output_linux_64/conf/
-cp -r ../custom/ ./output_linux_64/custom/
-cp -r dockerfiles/ ./output_linux_64/dockerfiles/
-cp -r ../public/ ./output_linux_64/public/
-cp -r ../templates/ ./output_linux_64/templates/
-cp ../cert.pem ./output_linux_64/
-cp ../CONTRIBUTING.md ./output_linux_64/
-cp gogs_supervisord.sh ./output_linux_64/
-cp ../key.pem ./output_linux_64/
-cp ../LICENSE ./output_linux_64/
-cp ../README.md ./output_linux_64/
-cp ../README_ZH.md ./output_linux_64/
-cp start.bat ./output_linux_64/
-cp start.sh ./output_linux_64/
-cp ../wercker.yml ./output_linux_64/
-cp mysql.sql ./output_linux_64/
+mv gogs $outPath/
+
+cp -r ../conf/ $outPath/conf/
+cp -r ../custom/ $outPath/custom/
+cp -r dockerfiles/ $outPath/dockerfiles/
+cp -r ../public/ $outPath/public/
+cp -r ../templates/ $outPath/templates/
+cp ../cert.pem $outPath/
+cp ../CONTRIBUTING.md $outPath/
+cp gogs_supervisord.sh $outPath/
+cp ../key.pem $outPath/
+cp ../LICENSE $outPath/
+cp ../README.md $outPath/
+cp ../README_ZH.md $outPath/
+cp start.bat $outPath/
+cp start.sh $outPath/
+cp ../wercker.yml $outPath/
+cp mysql.sql $outPath/

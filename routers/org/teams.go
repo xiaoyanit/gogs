@@ -77,7 +77,7 @@ func TeamsAction(ctx *middleware.Context) {
 		var u *models.User
 		u, err = models.GetUserByName(uname)
 		if err != nil {
-			if err == models.ErrUserNotExist {
+			if models.IsErrUserNotExist(err) {
 				ctx.Flash.Error(ctx.Tr("form.user_not_exist"))
 				ctx.Redirect(ctx.Org.OrgLink + "/teams/" + ctx.Org.Team.LowerName)
 			} else {
@@ -91,7 +91,7 @@ func TeamsAction(ctx *middleware.Context) {
 	}
 
 	if err != nil {
-		if err == models.ErrLastOrgOwner {
+		if models.IsErrLastOrgOwner(err) {
 			ctx.Flash.Error(ctx.Tr("form.last_org_owner"))
 		} else {
 			log.Error(3, "Action(%s): %v", ctx.Params(":action"), err)
@@ -124,7 +124,7 @@ func TeamsRepoAction(ctx *middleware.Context) {
 		var repo *models.Repository
 		repo, err = models.GetRepositoryByName(ctx.Org.Organization.Id, repoName)
 		if err != nil {
-			if err == models.ErrRepoNotExist {
+			if models.IsErrRepoNotExist(err) {
 				ctx.Flash.Error(ctx.Tr("org.teams.add_nonexistent_repo"))
 				ctx.Redirect(ctx.Org.OrgLink + "/teams/" + ctx.Org.Team.LowerName + "/repositories")
 				return
@@ -138,11 +138,8 @@ func TeamsRepoAction(ctx *middleware.Context) {
 	}
 
 	if err != nil {
-		log.Error(3, "Action(%s): %v", ctx.Params(":action"), err)
-		ctx.JSON(200, map[string]interface{}{
-			"ok":  false,
-			"err": err.Error(),
-		})
+		log.Error(3, "Action(%s): '%s' %v", ctx.Params(":action"), ctx.Org.Team.Name, err)
+		ctx.Handle(500, "TeamsRepoAction", err)
 		return
 	}
 	ctx.Redirect(ctx.Org.OrgLink + "/teams/" + ctx.Org.Team.LowerName + "/repositories")
@@ -168,14 +165,14 @@ func NewTeamPost(ctx *middleware.Context, form auth.CreateTeamForm) {
 	}
 
 	// Validate permission level.
-	var auth models.AuthorizeType
+	var auth models.AccessMode
 	switch form.Permission {
 	case "read":
-		auth = models.ORG_READABLE
+		auth = models.ACCESS_MODE_READ
 	case "write":
-		auth = models.ORG_WRITABLE
+		auth = models.ACCESS_MODE_WRITE
 	case "admin":
-		auth = models.ORG_ADMIN
+		auth = models.ACCESS_MODE_ADMIN
 	default:
 		ctx.Error(401)
 		return
@@ -184,7 +181,7 @@ func NewTeamPost(ctx *middleware.Context, form auth.CreateTeamForm) {
 	org := ctx.Org.Organization
 
 	t := &models.Team{
-		OrgId:       org.Id,
+		OrgID:       org.Id,
 		Name:        form.TeamName,
 		Description: form.Description,
 		Authorize:   auth,
@@ -249,14 +246,14 @@ func EditTeamPost(ctx *middleware.Context, form auth.CreateTeamForm) {
 	isAuthChanged := false
 	if !t.IsOwnerTeam() {
 		// Validate permission level.
-		var auth models.AuthorizeType
+		var auth models.AccessMode
 		switch form.Permission {
 		case "read":
-			auth = models.ORG_READABLE
+			auth = models.ACCESS_MODE_READ
 		case "write":
-			auth = models.ORG_WRITABLE
+			auth = models.ACCESS_MODE_WRITE
 		case "admin":
-			auth = models.ORG_ADMIN
+			auth = models.ACCESS_MODE_ADMIN
 		default:
 			ctx.Error(401)
 			return

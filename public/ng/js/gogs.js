@@ -2,6 +2,7 @@
 // @codekit-prepend "lib/lib.js"
 // @codekit-prepend "utils/tabs.js"
 // @codekit-prepend "utils/preview.js"
+// @codekit-prepend "gogs/issue_label.js"
 // @codekit-prepend "lib/jquery.tipsy.js"
 
 var Gogs = {};
@@ -56,10 +57,10 @@ var Gogs = {};
     });
     $.fn.extend({
         toggleHide: function () {
-            $(this).addClass("hidden");
+            $(this).each(function(n, v) { $(v).addClass("hidden"); });
         },
         toggleShow: function () {
-            $(this).removeClass("hidden");
+            $(this).each(function(n, v) { $(v).removeClass("hidden"); });
         },
         toggleAjax: function (successCallback, errorCallback) {
             var url = $(this).data("ajax");
@@ -201,8 +202,90 @@ var Gogs = {};
         }).trigger('hashchange');
     };
 
+    // Render diff view.
+    Gogs.renderDiffView = function () {
+        function selectRange($list, $select, $from) {
+            $list.removeClass('active');
+            $list.parents('tr').removeClass('end-selected-line');
+            $list.parents('tr').find('td').removeClass('selected-line');
+            if ($from) {
+                var expr = new RegExp(/diff-(\w+)([LR]\d+)/);
+                var selectMatches = $select.attr('rel').match(expr)
+                var fromMatches = $from.attr('rel').match(expr)
+                var selectTop = $select.offset().top;
+                var fromTop = $from.offset().top;
+                var hash;
+
+                if (selectMatches[2] != fromMatches[2]) {
+                    if ((selectTop > fromTop)) {
+                        $startElem = $from;
+                        $endElem = $select;
+                        hash = fromMatches[1]+fromMatches[2] + '-' + selectMatches[2];
+                    } else {
+                        $startElem = $select;
+                        $endElem = $from;
+                        hash = selectMatches[1]+selectMatches[2] + '-' + fromMatches[2];
+                    }
+                    $endElem.parents('tr').next().addClass('end-selected-line');
+                    var $selectedLines = $startElem.parents('tr').nextUntil('.end-selected-line').andSelf();
+                    $selectedLines.find('td.lines-num > span').addClass('active')
+                    $selectedLines.find('td').addClass('selected-line');
+                    $.changeHash('#diff-'+hash);
+                    return
+                }
+            }
+            $select.addClass('active');
+            $select.parents('tr').find('td').addClass('selected-line');
+            $.changeHash('#' + $select.attr('rel'));
+        }
+
+        $(document).on('click', '.code-diff .lines-num span', function (e) {
+            var $select = $(this);
+            var $list = $select.parent().siblings('.lines-code').parents().find('td.lines-num > span');
+            selectRange(
+                $list,
+                $list.filter('[rel=' + $select.attr('rel') + ']'),
+                (e.shiftKey && $list.filter('.active').length ? $list.filter('.active').eq(0) : null)
+            );
+            $.deSelect();
+        });
+
+        $('.code-diff .lines-code > pre').each(function () {
+            var $pre = $(this);
+            var $lineCode = $pre.parent();
+            var $lineNums = $lineCode.siblings('.lines-num');
+            if ($lineNums.length > 0) {
+                var nums = $pre.find('ol.linenums > li').length;
+                for (var i = 1; i <= nums; i++) {
+                    $lineNums.append('<span id="L' + i + '" rel="L' + i + '">' + i + '</span>');
+                }
+            }
+        });
+
+        $(window).on('hashchange', function (e) {
+            var m = window.location.hash.match(/^#diff-(\w+)([LR]\d+)\-([LR]\d+)$/);
+            var $list = $('.code-diff td.lines-num > span');
+            var $first;
+            if (m) {
+                $first = $list.filter('[rel=diff-' + m[1] + m[2] + ']');
+                selectRange($list, $first, $list.filter('[rel=diff-' + m[1] + m[3] + ']'));
+                $("html, body").scrollTop($first.offset().top - 200);
+                return;
+            }
+            m = window.location.hash.match(/^#diff-(\w+)([LR]\d+)$/);
+            if (m) {
+                $first = $list.filter('[rel=diff-' + m[1] + m[2] + ']');
+                selectRange($list, $first);
+                $("html, body").scrollTop($first.offset().top - 200);
+            }
+        }).trigger('hashchange');
+    };
+
     // Search users by keyword.
     Gogs.searchUsers = function (val, $target) {
+        var notEmpty = function (str) {
+          return str && str.length > 0;
+        }
         $.ajax({
             url: Gogs.AppSubUrl + '/api/v1/users/search?q=' + val,
             dataType: "json",
@@ -210,7 +293,11 @@ var Gogs = {};
                 if (json.ok && json.data.length) {
                     var html = '';
                     $.each(json.data, function (i, item) {
-                        html += '<li><a><img src="' + item.avatar + '">' + item.username + '</a></li>';
+                        html += '<li><a><img src="' + item.avatar_url + '"><span class="username">' + item.username + '</span>';
+                        if (notEmpty(item.full_name)) {
+                          html += ' (' + item.full_name + ')';
+                        }
+                        html += '</a></li>';
                     });
                     $target.html(html);
                     $target.toggleShow();
@@ -230,7 +317,7 @@ var Gogs = {};
                 if (json.ok && json.data.length) {
                     var html = '';
                     $.each(json.data, function (i, item) {
-                        html += '<li><a><span class="octicon octicon-repo"></span> ' + item.repolink + '</a></li>';
+                        html += '<li><a><span class="octicon octicon-repo"></span> ' + item.full_name + '</a></li>';
                     });
                     $target.html(html);
                     $target.toggleShow();
@@ -246,25 +333,17 @@ var Gogs = {};
         if ($(selector).hasClass('js-copy-bind')) {
             return;
         }
-        $(selector).zclip({
-            path: Gogs.AppSubUrl + "/js/ZeroClipboard.swf",
-            copy: function () {
-                var t = $(this).data("copy-val");
-                var to = $($(this).data("copy-from"));
-                var str = "";
-                if (t == "txt") {
-                    str = to.text();
-                }
-                if (t == 'val') {
-                    str = to.val();
-                }
-                if (t == 'html') {
-                    str = to.html();
-                }
-                return str;
-            },
-            afterCopy: function () {
+
+        if ( document.documentElement.classList.contains("is-copy-enabled") ) {
+
+            $(selector).click(function(event) {
                 var $this = $(this);
+
+                var cfrom = $this.attr('data-copy-from');
+                $(cfrom).select();
+                document.execCommand('copy');
+                getSelection().removeAllRanges();
+
                 $this.tipsy("hide").attr('original-title', $this.data('after-title'));
                 setTimeout(function () {
                     $this.tipsy("show");
@@ -272,14 +351,55 @@ var Gogs = {};
                 setTimeout(function () {
                     $this.tipsy('hide').attr('original-title', $this.data('original-title'));
                 }, 2000);
-            }
-        }).addClass("js-copy-bind");
+                
+                this.blur();
+                return;
+            });
+
+            $(selector).addClass("js-copy-bind");
+
+        } else {
+
+            $(selector).zclip({
+                path: Gogs.AppSubUrl + "/js/ZeroClipboard.swf",
+                copy: function () {
+                    var t = $(this).data("copy-val");
+                    var to = $($(this).data("copy-from"));
+                    var str = "";
+                    if (t == "txt") {
+                        str = to.text();
+                    }
+                    if (t == 'val') {
+                        str = to.val();
+                    }
+                    if (t == 'html') {
+                        str = to.html();
+                    }
+                    return str;
+                },
+                afterCopy: function () {
+                    var $this = $(this);
+                    $this.tipsy("hide").attr('original-title', $this.data('after-title'));
+                    setTimeout(function () {
+                        $this.tipsy("show");
+                    }, 200);
+                    setTimeout(function () {
+                        $this.tipsy('hide').attr('original-title', $this.data('original-title'));
+                    }, 2000);
+                }
+            }).addClass("js-copy-bind");
+        }
     }
 })(jQuery);
 
 function initCore() {
     Gogs.renderMarkdown();
-    Gogs.renderCodeView();
+
+    if ($('.code-diff').length == 0) {
+        Gogs.renderCodeView();
+    } else {
+        Gogs.renderDiffView();
+    }
 
     // Switch list.
     $('.js-tab-nav').click(function (e) {
@@ -300,8 +420,11 @@ function initCore() {
         $.magnificPopup.close();
     });
 
-    // Collapse.
+    // Plugins.
     $('.collapse').hide();
+    $('.tipsy-tooltip').tipsy({
+        fade: true
+    });
 }
 
 function initUserSetting() {
@@ -329,9 +452,9 @@ function initUserSetting() {
         $profile_form.submit();
     });
 
-    // Show add SSH key panel.
-    $('#ssh-add').click(function () {
-        $('#user-ssh-add-form').removeClass("hide");
+    // Show panels.
+    $('.show-form-btn').click(function () {
+        $($(this).data('target-form')).removeClass("hide");
     });
 
     // Confirmation of delete account.
@@ -392,6 +515,16 @@ function initRepo() {
     $clone_btn.tipsy({
         fade: true
     });
+
+    // Markdown preview.
+    $('.markdown-preview').click(function() {
+        var $this = $(this);
+        $this.toggleAjax(function (resp) {
+            $($this.data("preview")).html(resp);
+        }, function () {
+            $($this.data("preview")).html("no content");
+        })
+    });
 }
 
 // when user changes hook type, hide/show proper divs
@@ -410,6 +543,18 @@ function initHookTypeChange() {
             }
         });
     });
+}
+
+function initRepoRelease() {
+    $('#release-new-target-branch-list li').click(function() {
+        if (!$(this).hasClass('checked')) {
+            $('#repo-branch-current').text($(this).text());
+            $('#tag-target').val($(this).text());
+
+            $(this).parent().find('.checked').removeClass('checked');
+            $(this).addClass('checked');
+        }
+    })
 }
 
 function initRepoSetting() {
@@ -475,7 +620,7 @@ function initRepoSetting() {
             $ul.toggleShow();
         }
     }).next().next().find('ul').on("click", 'li', function () {
-        $('#repo-collaborator').val($(this).text());
+        $('#repo-collaborator').val($(this).find('.username').text());
         $ul.toggleHide();
     });
 }
@@ -538,7 +683,7 @@ function initInvite() {
             $ul.toggleShow();
         }
     }).next().next().find('ul').on("click", 'li', function () {
-        $('#org-member-invite').val($(this).text());
+        $('#org-member-invite').val($(this).find('.username').text());
         $ul.toggleHide();
     });
 }
@@ -575,7 +720,7 @@ function initTeamMembersList() {
             $ul.toggleShow();
         }
     }).next().next().find('ul').on("click", 'li', function () {
-        $('#org-team-members-add').val($(this).text());
+        $('#org-team-members-add').val($(this).find('.username').text());
         $ul.toggleHide();
     });
 }
@@ -630,17 +775,20 @@ function initAdmin() {
         $form.attr('action', $form.data('delete-url'));
     });
 
-    // Create authorization.
+    // Create authorization. Keep list in sync with models/login.go.
+    var all_auths = ['none', 'plain', 'ldap', 'dldap', 'smtp', 'pam'];
     $('#auth-type').on("change", function () {
         var v = $(this).val();
-        if (v == 2) {
-            $('.ldap').toggleShow();
-            $('.smtp').toggleHide();
-        }
-        if (v == 3) {
-            $('.smtp').toggleShow();
-            $('.ldap').toggleHide();
-        }
+        if (v >= all_auths.length) return;
+
+        // Hide all through their class names.
+        $.each(all_auths, function(i, type) {
+          $('.' + type).toggleHide();
+        });
+
+        // Show the selected one.
+        var selected = all_auths[v];
+        $('.' + selected).toggleShow();
     });
 
     // Delete authorization.
@@ -742,7 +890,11 @@ $(document).ready(function () {
         initRepoCreate();
     }
     if ($('#repo-header').length) {
+        initTimeSwitch();
         initRepo();
+    }
+    if ($('#release').length) {
+        initRepoRelease();
     }
     if ($('#repo-setting').length) {
         initRepoSetting();
@@ -780,6 +932,10 @@ $(document).ready(function () {
     $('#pull-issue-preview').markdown_preview(".issue-add-comment");
 
     homepage();
+    emojify.setConfig({
+        img_dir: Gogs.AppSubUrl + '/img/emoji'
+    });
+    emojify.run();
 
     // Fix language drop-down menu height.
     var l = $('#footer-lang li').length;
@@ -808,3 +964,7 @@ function homepage() {
         $('#promo-form').attr('action', Gogs.AppSubUrl + '/user/sign_up');
     });
 }
+
+String.prototype.endsWith = function (suffix) {
+    return this.indexOf(suffix, this.length - suffix.length) !== -1;
+};
